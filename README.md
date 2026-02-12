@@ -1,5 +1,5 @@
 # InSiteDTA
-<img width="4200" height="1498" alt="Fig_overview (1)" src="https://github.com/user-attachments/assets/32471bd9-2104-4b2c-a1f7-dfb0fd885b4c" />
+<img width="4200" height="1498" alt="Fig_overview" src="https://github.com/user-attachments/assets/66a2831e-2014-44ad-be55-5fe7f8ed609f" />
 
 A complex-free deep learning model for protein-ligand binding affinity prediction with intrinsic binding site detection.
 
