@@ -128,7 +128,7 @@ class IntegratedMolEncoder(nn.Module):
             # Add corresponding query token (same order)
             self.attn_queries.append(nn.Parameter(torch.randn(1, 1, out_channels)))
 
-    def forward(self, mol_data, return_conf_data=False):
+    def forward(self, mol_data):
         x, edge_index, edge_attr, batch_index, z, pos = (
             mol_data.x,
             mol_data.edge_index,
@@ -139,12 +139,6 @@ class IntegratedMolEncoder(nn.Module):
         )
         
         encoder_outputs = []
-
-        if return_conf_data:
-            conf_data = {
-                'attn_weights': {},
-                'egnn_pos': {}
-            }
 
         if self.encoder_dicts["2D_encoders"]:
             for enc_2d in self.encoder_dicts["2D_encoders"]:
@@ -164,17 +158,9 @@ class IntegratedMolEncoder(nn.Module):
             batch_size = batch_index.max().item() + 1
             pos_stacked = pos.reshape(-1, 3)
 
-            if return_conf_data:
-                conf_data['egnn_pos']['initial'] = pos_stacked.detach().cpu()
-
             for idx, enc_attn_pair in enumerate(self.encoder_dicts["3D_encoders"]):
                 enc_3d, attn_3d = enc_attn_pair
-
-                if isinstance(enc_3d, MoleculeEncoder_CustomEGNN) and return_conf_data:
-                    enc_3d_out, pos_final = enc_3d(z_repeated, pos_stacked, batch_index_repeated, return_final_pos=True)
-                    conf_data['egnn_pos']['final'] = pos_final.detach().cpu()
-                else:
-                    enc_3d_out = enc_3d(z_repeated, pos_stacked, batch_index_repeated)
+                enc_3d_out = enc_3d(z_repeated, pos_stacked, batch_index_repeated)
 
                 enc_3d_per_conf = enc_3d_out.split(batch_size, dim=0)
                 enc_3d_stack = torch.stack(enc_3d_per_conf, dim=1)  # [batch_size, num_confs, out_channels]
@@ -191,10 +177,6 @@ class IntegratedMolEncoder(nn.Module):
                 scale = k.size(-1) ** -0.5
                 logits = (q @ k.transpose(-2, -1)) * scale  # [batch_size, 1, num_confs]
                 attn = F.softmax(logits, dim=-1)
-
-                if return_conf_data:
-                    encoder_name = enc_3d.__class__.__name__.replace('MoleculeEncoder_Custom', '').lower()
-                    conf_data['attn_weights'][encoder_name] = attn.detach().cpu()
                 
                 # Compute attention output
                 weighted_sum = (attn @ v).squeeze(1)  # [batch_size, out_channels]
@@ -203,10 +185,7 @@ class IntegratedMolEncoder(nn.Module):
 
             mol_features = torch.stack(encoder_outputs, dim=1)
 
-        if return_conf_data:
-            return mol_features, conf_data
-        else:
-            return mol_features
+        return mol_features
 
 class MoleculeEncoder_CustomEGNN(nn.Module):
     """

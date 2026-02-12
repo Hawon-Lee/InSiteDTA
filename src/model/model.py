@@ -11,7 +11,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-########## in-house codes ###########
+########## codes in directory ###########
 from .encoder import SwinTransformer
 from .decoder import UnetrBasicBlock, UnetrUpBlock, UnetOutBlock
 from .molecule_encoders import IntegratedMolEncoder
@@ -224,14 +224,11 @@ class InSiteDTA(nn.Module):
             out_dim=1,
         )
 
-    def forward(self, x_in, mol_data=None, return_conf_data=False, return_attn_map=False):
+    def forward(self, x_in, mol_data=None, return_attn_map=False):
 
         mol_features = None
         if mol_data is not None:
-            if return_conf_data:
-                mol_features, conf_data = self.mol_encoder(mol_data, return_conf_data=True)
-            else:
-                mol_features = self.mol_encoder(mol_data)
+            mol_features = self.mol_encoder(mol_data)
 
         hidden_states = self.swinViT(x_in)
         bottleneck = hidden_states[-1]
@@ -267,7 +264,7 @@ class InSiteDTA(nn.Module):
                 patch_features=dec1_pred_pocket, mol_features=mol_features
             )
 
-        # 병렬 경로
+        # Binding affinity regression head
         pooled_features_p2l = self.attention_pooling(bottleneck_p2l)
         pooled_features_l2pocket = self.seq_attn_pooling(l2pocket)
 
@@ -277,11 +274,7 @@ class InSiteDTA(nn.Module):
         )
         regression_output = self.regression_head(pooled_features).squeeze()
         
-        if return_conf_data and return_attn_map:
-            return logits, regression_output, conf_data, l2pocket_attn
-        elif return_conf_data:
-            return logits, regression_output, conf_data
-        elif return_attn_map:
+        if return_attn_map:
             return logits, regression_output, l2pocket_attn
         else:
             return logits, regression_output

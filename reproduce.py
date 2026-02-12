@@ -18,8 +18,10 @@ from src.scripts.utils import calc_metrics
 def get_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--data", type=str, choices=["crystal", "redocked", "p2rank"], required=True, help="Coreset types to evaluate InSiteDTA")
+    parser.add_argument("--batch_size", type=int, default=64, help="Bacth size for inference")
     parser.add_argument("--device", type=int, default=0, help="GPU device to use")
     return parser.parse_args()
+
 
 def prep_ligand(smi_csv, input_dir="./model_input"):
     os.makedirs(f"{input_dir}/ligands", exist_ok=True)
@@ -69,7 +71,7 @@ def prep_protein(data_dir, input_dir="./model_input", device="cuda:0"):
         with open(out_center_name, "wb") as fp:
             pickle.dump(center, fp)
 
-def inference(lig_dir="./model_input/ligands", ptn_dir="./model_input/proteins", device="cuda:0", batch_size=128, index=None, ckpt=None):
+def inference(lig_dir="./model_input/ligands", ptn_dir="./model_input/proteins", device="cuda:0", batch_size=64, index=None, ckpt=None):
     _get_paths = lambda x: [os.path.join(x, f) for f in sorted(os.listdir(x)) if f.endswith("_ligand.pkl") or f.endswith("_dim22.pkl")]
     _crop_ids = lambda x: os.path.basename(x).split("_")[0]
     
@@ -131,9 +133,12 @@ def inference(lig_dir="./model_input/ligands", ptn_dir="./model_input/proteins",
     with torch.no_grad():
         for lig_batch, ptn_batch in zip(lig_batch_ls, ptn_batch_ls):
             pred_pocket, pred_ba = model(ptn_batch, lig_batch)
+            if pred_ba.dim() == 0:
+                pred_ba = pred_ba.unsqueeze(0)
             pred_ba_ls.append(pred_ba)
             
     total_pred_ba = torch.concat(pred_ba_ls).cpu()
+    
     return total_pred_ba, total_target_ba
 
 def main():
@@ -141,7 +146,7 @@ def main():
     data = args.data
     device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
     
-    batch_size = 48
+    batch_size = args.batch_size
     index = "./src/data/PDBbind_aff_index.json"
     ckpt_ls = [
         "./src/model/ckpt/run_1.pt",
