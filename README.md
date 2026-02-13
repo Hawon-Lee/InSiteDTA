@@ -22,23 +22,11 @@ conda env create -f environment.yml
 conda activate insite
 ```
 
-### 3. Install PyTorch and PyTorch Geometric
-
 **Our tested environment:**
 - Python: 3.9.19
 - PyTorch: 2.5.1
 - PyTorch Geometric: 2.6.1
 - CUDA: 11.8
-
-Install PyTorch based on your CUDA version from the official site:
-https://pytorch.org/get-started/locally/
-
-For our CUDA 11.8 setup:
-```bash
-pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu118
-pip install torch-geometric==2.6.1
-pip install torch_scatter torch_cluster -f https://data.pyg.org/whl/torch-2.5.1+cu118.html
-```
 
 ## Quick Start
 ```bash
