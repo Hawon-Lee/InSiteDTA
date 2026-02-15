@@ -30,4 +30,4 @@ Thumbs.db
 logs/
 
 # Custom
-model_input_*
+model_input*
