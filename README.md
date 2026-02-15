@@ -29,17 +29,33 @@ conda activate insite
 - CUDA: 11.8
 
 ## Quick Start
+
 ```bash
-python inference.py \
+python 01-inference.py \
     --pdb_path <path_to_protein.pdb> \
     --smiles <ligand_smiles>
 ```
 
 **Example:**
 ```bash
-python inference.py \
+python 01-inference.py \
     --pdb_path ./src/data/sample/1bzc_protein.pdb \
     --smiles "[O-]C(=O)CC[C@@H](C(=O)N)NC(=O)c1ccc2c(c1)ccc(c2)C(P(=O)([O-])[O-])(F)F"
+```
+
+## Standard Training Procedure
+```bash
+sh standard_train.sh 를 실행하세요
+```
+
+## Training With Your Own Data
+```bash
+python 02-preprocess.py --(당신은 2개의 raw data 구조를 채택할 수 있습니다.)
+하나는 pdbbind-like architecture (ligand structure info 가 있을 경우 권장)
+(data/{pdb_id}/{pdb_id}_protein.pdb)
+
+다른 하나는 flatten architecture (ligand structure info 가 없고 smiles 만 있을 경우 권장)
+(data/proteins/{*pdb_id}_protein.pdb)
 ```
 
 ## Reproduce Paper Results
@@ -47,13 +63,13 @@ python inference.py \
 Run evaluation on three benchmark datasets:
 ```bash
 # Evaluate on Coreset_crystal
-python reproduce.py --data crystal --device 0
+python 04-reproduce.py --data crystal --batch_size 64 --device 0
 
 # Evaluate on Coreset_redocked  
-python reproduce.py --data redocked --device 0
+python 04-reproduce.py --data redocked --batch_size 64 --device 0
 
 # Evaluate on Coreset_p2rank
-python reproduce.py --data p2rank --device 0
+python 04-reproduce.py --data p2rank --batch_size 64 --device 0
 ```
 
 The script will:

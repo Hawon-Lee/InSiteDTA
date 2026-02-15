@@ -94,6 +94,7 @@ class LigandPreprocessor:
         mol 객체의 원자를 순회하면서 atom_feature 함수를 활용해 분자 feature 생성
         to_tensor -> return을 numpy 대신 tensor
         '''
+        
         n_atoms = mol.GetNumAtoms()
         atom_features = []
         

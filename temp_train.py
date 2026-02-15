@@ -1,39 +1,38 @@
-import argparse
+# TODO: 저장을 ckpt 폴더에 맞게 해서 inference 폴더 또는 reproduce 폴더와 일치하게.
+"""
+data directory, hyperparams -> training cfg file
+training cfg file -> training/validation -> ckpt saving
+evaluation by inference code? options 조절이 안되는데 out channels 만 조절하면 되려나
+"""
+
+import argparse, os, sys, json
 import wandb
-import json
-import os, sys
 import numpy as np
+
+from tqdm import tqdm
+from datetime import datetime
+
 import torch
 import torch.nn as nn
-from datetime import datetime
-from tqdm import tqdm
 from torch import optim
-from torch.optim import lr_scheduler
 from torch.amp import autocast, GradScaler
 
-import warnings
-
-warnings.filterwarnings("ignore")
-
-import sys
-from model.model import CustomSwinUnetr
-sys.path.append("../../../../SCRIPTS")
-from data.dataloader import MasterDataLoader
-from _unspecified import (
-    fix_seed,
-    EarlyStopping,
-    DiceWithLogitsLoss,
-    rotate_3d_6faces,
-    calc_batch_vDCC_count_nan_with_logit,
-    calc_batch_DVO_with_logit,
-    SoftDiceWithLogitsLoss,
-    FocalLoss,
-    CosineAnnealingWarmUpRestarts,
-    add_gaussian_noise,
+from src.model.model import InSiteDTA
+from src.scripts.dataloader import MasterDataLoader
+from src.scripts.utils_training import (
     parse_int_list,
     parse_float_list,
     parse_str_list,
-    override_args_from_json
+    fix_seed,
+    override_args_from_json,
+    rotate_3d_6faces,
+    add_gaussian_noise,
+    EarlyStopping,
+    CosineAnnealingWarmUpRestarts,
+    DiceWithLogitsLoss,
+    SoftDiceWithLogitsLoss,
+    calc_DCC_with_logit,
+    calc_DVO_with_logit,
 )
 
 def parse_arguments():
@@ -41,17 +40,18 @@ def parse_arguments():
     
     parser.add_argument('--gpu', type=int, default=0, help='GPU device ID to use')
     parser.add_argument("--wandb_config", type=str, default=None, help="Path to result JSON config file after wandb sweep")
-    parser.add_argument("--data_config", type=str, required=True, help='Json configuration file path specifies train/test data splits and metadata for learning.')
-    parser.add_argument("--output_dir", type=str, default="./checkpoints", help='Output directory to save best model validation results and checkpoint')
+    parser.add_argument("--data_config", type=str, default="../DATA/data_split/datasplit_trPDBbind2016_tsPDBbind-coreset_vox2_dim32_ch21_ligRDMOL.json", help='Json configuration file path specifies train/test data splits and metadata for learning.')
+    parser.add_argument("--output_dir", type=str, default="/home/tech/Hawon/Develop/Interaction_free/MAIN_REFAC/new/RESULTS/ckpt", help='Output directory to save best model validation results and checkpoint')
     parser.add_argument("--num_workers", type=int, default=6, help="Number of dataloader workers")
     
     # For Reproducibility
     parser.add_argument('--seed', type=int, default=312, help='Random seed for training, (-1 for random)')
     parser.add_argument("--ckpt", type=str, help="Model checkpoint path if exists")
 
-    # =============== Model Args (sw: swin transformer encoder, mol: molecule encoder, dec: decoder, ca: cross attn) ===============
+    # =============== Model Args (sw: swin transformer encoder, mol: molecule encoder, dec: decoder, ca: cross attention module) ===============
     parser.add_argument("--in_channels", type=int, default=21, help="Input channel size")
     parser.add_argument("--feature_size", type=int, default=48, help="Dimension of the first embedding token")
+
     parser.add_argument("--sw_depths", type=parse_int_list, default=[2, 2, 2], help="Swin Transformer layer depths. Each int means number of swin attention operations in each layer")
     parser.add_argument("--sw_window_size", type=int, default=7, help="Window size for swin attention operation")
     parser.add_argument("--sw_patch_size", type=parse_int_list, default=[2, 2, 2], help="Patch size (only used when model is SwinUnetr)")
@@ -139,7 +139,7 @@ def train_model(
 ):
 
     wandb.init(
-        project=f"InSiteDTA",
+        project=f"Kill_CAPLA",
         name=experiment_name,
         config=train_config,
     )
@@ -386,14 +386,14 @@ def train_model(
                     )
 
                 # val metrics 계산
-                vDCC, nan_index = calc_batch_vDCC_count_nan_with_logit(
+                vDCC, nan_index = calc_DCC_with_logit(
                     pred_pocket,
                     pocket,
                     voxel_size=data_config["voxel_size"],
                     threshold=train_config.DCC_threshold,
                 )
                     
-                DVO = calc_batch_DVO_with_logit(
+                DVO = calc_DVO_with_logit(
                     pred_pocket, pocket, threshold=train_config.DVO_threshold
                 )
 
