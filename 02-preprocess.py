@@ -1,11 +1,13 @@
 # TODO: flatten data structure 구현 (단백질 폴더에 .pdb 만 있고(pocket 유무도 고려) / 리간드는 무조건 ligand smiles 형태로 제시)
 # TODO: implement first-channel representation
+# TODO: args.seed -> 0 for random 을 -1 for random 으로 고치기
 
 import os, sys, argparse, pickle
 import numpy as np
 import pandas as pd
 import torch
 
+from datetime import datetime
 from tqdm import tqdm
 from typing import Literal
 
@@ -17,7 +19,7 @@ def get_arguments():
     parser = argparse.ArgumentParser()
     
     parser.add_argument("--raw_dir", type=str, default="src/data/samples", help="Directory containing raw protein PDB files")
-    parser.add_argument("--save_dir", type=str, default="model_input", help="Output directory for preprocessed protein and ligand files")
+    parser.add_argument("--save_dir", type=str, default="preprocessed_input", help="Output directory for preprocessed protein and ligand files")
 
     # ligand featurization args
     parser.add_argument("--smiles_csv", type=str, default="src/data/index/ligand_smiles_pdbbind2020.csv", help="Csv file path containing smiles with pdb id")
@@ -31,12 +33,20 @@ def get_arguments():
         help="Structure of the raw pdb data directory (pdbbind format: nested)"
     )
     
-    
-    # voxelization configs
     parser.add_argument("--voxel_size", type=int, default=2, help="Size of each voxel in Angstroms")
     parser.add_argument("--n_voxels", type=int, default=32, help="Number of voxels along each dimension of the 3D grid")
-    parser.add_argument("--device", default=0, help="GPU index to use while protein voxelization")
+    parser.add_argument("--device", type=int, default=0, help="GPU index to use while protein voxelization")
 
+    # data split args
+    parser.add_argument("--seed", type=int, default=312, help="Seed for reproduce data split. 0 for random")
+    parser.add_argument("--index_file", type=str, default="src/data/index/affinity_index_pdbbind2020.json", help="Json file containing binding affinity index of target proteins")
+    parser.add_argument(
+        "--test_key_file",
+        type=str,
+        default="src/data/index/test_key_file_pdbbind-coreset.txt",
+        help="Path to file containing test set keys. Use 'none' for random split",
+    )
+    parser.add_argument("--val_size", type=float, default=0.15, help="Fraction of training data to use for validation")
     # # Dataset selection
     # parser.add_argument(
     #     "--train_source_name",
@@ -70,18 +80,8 @@ def get_arguments():
     #     ],
     #     help="Target dataset for evaluation model performance",
     # )
-    # parser.add_argument(
-    #     "--test_key_file_path",
-    #     type=str,
-    #     default="/home/tech/Hawon/Develop/Interaction_free/MAIN_REFAC/new/DATA/data_split/test_keys/PDBbind-coreset.txt",
-    #     help="Path to file containing test set keys",
-    # )
-    # parser.add_argument(
-    #     "--val_size",
-    #     type=float,
-    #     default=0.15,
-    #     help="Fraction of training data to use for validation",
-    # )
+    
+    
     # parser.add_argument(
     #     "--lig_file_format",
     #     type=str,
@@ -234,7 +234,7 @@ def collect_pdb_ids(data_structure: Literal["nested", "flatten"], raw_dir: str) 
     elif data_structure == "flatten":
         pdb_id_ls = sorted(["_".join(f.split("_")[:-1]) for f in os.listdir(raw_dir) if f.endswith("protein.pdb")])
     
-    print(f"0. Collected # {len(pdb_id_ls)} target pdb ids from raw_dir: {raw_dir}")
+    print(f"0. Collected # {len(pdb_id_ls)} target pdb ids from raw_dir ({raw_dir})")
     return pdb_id_ls
 
 
@@ -304,7 +304,22 @@ def voxelize_protein(data_structure: Literal["nested", "flatten"], raw_dir: str,
             pickle.dump(center, fp)
 
 
-def generate_data_cfg() -> None:
+def generate_data_cfg(
+        prep_dir_lig: str,
+        prep_dir_ptn: str,
+        save_dir: str,
+        seed: int,
+        index_file: str,
+        val_size: float,
+        test_key_file: str = "",
+        voxel_size: int = 2,
+        n_voxels: int = 32
+    ):
+    
+    out_cfg_name = os.path.join(save_dir, "data_config_" + datetime.now().strftime("%y%m%d-%H%M%S") + ".json")
+    breakpoint()
+    # preprocessed data 받아서, data 정보가 담긴 cfg 파일 생성
+    # 
     # match preprocessed protein and ligand files
     # print how many files were not successfully preprocessed
     pass
@@ -314,21 +329,35 @@ def main():
     args = get_arguments()
     
     pdb_id_ls = collect_pdb_ids(args.data_structure, args.raw_dir)
+    save_dir_lig = args.save_dir + "/input_ligand"
+    save_dir_ptn = args.save_dir + "/input_protein"
+    
+    # print_args(args)
     
     featurize_ligand(
         smiles_csv=args.smiles_csv,
         pdb_id_ls=pdb_id_ls,
-        save_dir=args.save_dir + "/input_ligand",
+        save_dir=save_dir_lig
     )
     voxelize_protein(
         data_structure=args.data_structure,
         raw_dir=args.raw_dir,
         pdb_id_ls=pdb_id_ls,
-        save_dir=args.save_dir + "/input_protein",
+        save_dir=save_dir_ptn,
         voxel_size=args.voxel_size,
         n_voxels=args.n_voxels
     )
-    # generate_data_cfg(args., args. ..., save_dir_ptn, save_dir_lig)
+    generate_data_cfg(
+        prep_dir_lig=save_dir_lig,
+        prep_dir_ptn=save_dir_ptn,
+        save_dir=args.save_dir,
+        seed=args.seed,
+        index_file=args.index_file,
+        val_size=args.val_size,
+        test_key_file=args.test_key_file, # -> 있으면 반영해서 split, 없으면 랜덤 스플릿 (with log)
+        voxel_size=args.voxel_size,
+        n_voxels=args.n_voxels
+    )
     
     pass
 

@@ -31,3 +31,4 @@ logs/
 
 # Custom
 model_input*
+preprocessed_input
