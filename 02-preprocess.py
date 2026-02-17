@@ -2,7 +2,7 @@
 # TODO: implement first-channel representation
 # TODO: args.seed -> 0 for random 을 -1 for random 으로 고치기
 
-import os, sys, argparse, pickle
+import os, sys, argparse, pickle, json
 import numpy as np
 import pandas as pd
 import torch
@@ -10,7 +10,7 @@ import torch
 from datetime import datetime
 from tqdm import tqdm
 from typing import Literal
-
+from sklearn.model_selection import train_test_split
 
 from src.scripts.preprocess.protein_voxelization import ProteinVoxelizer
 from src.scripts.preprocess.generate_mol_object import generate_mol_object, generate_conformers
@@ -43,7 +43,7 @@ def get_arguments():
     parser.add_argument(
         "--test_key_file",
         type=str,
-        default="src/data/index/test_key_file_pdbbind-coreset.txt",
+        default="src/data/index/test_key_file_sample.txt",
         help="Path to file containing test set keys. Use 'none' for random split",
     )
     parser.add_argument("--val_size", type=float, default=0.15, help="Fraction of training data to use for validation")
@@ -224,6 +224,15 @@ def get_arguments():
     args = parser.parse_args()
     return args
 
+def print_args(args: argparse.Namespace):
+    print("+" + "-" * 80 + "+")
+    print("| " + "Preprocessing Configuration".ljust(78) + " |")
+    print("+" + "-" * 80 + "+")
+    for k, v in vars(args).items():
+        line = f"|  - {k}: {v}"
+        print(line.ljust(80) + " |")
+    print("+" + "-" * 80 + "+")
+
     
 def collect_pdb_ids(data_structure: Literal["nested", "flatten"], raw_dir: str) -> list[str]:
     if not os.path.exists(raw_dir):
@@ -303,8 +312,24 @@ def voxelize_protein(data_structure: Literal["nested", "flatten"], raw_dir: str,
         with open(out_center_name, "wb") as fp:
             pickle.dump(center, fp)
 
+def split_data_keys(pdb_id_ls: list, val_size: float, seed: int, test_key_file: str = ""):
+    
+    if test_key_file:
+        with open(test_key_file, "r") as fp:
+            ts_keys = fp.read().splitlines()
+        tr_vl_keys = [i for i in pdb_id_ls if i not in ts_keys]
+        print(f"  - Found {len(ts_keys)} test keys from {len(pdb_id_ls)} total targets. These will be excluded from training data.")
+    else:
+        tr_vl_keys, ts_keys = train_test_split(pdb_id_ls, test_size=val_size, random_state=seed, shuffle=True)
+        print(f"  - Test keys were not specified. Will randomly split with the same size as validation ({val_size}).")
+    
+    tr_keys, vl_keys = train_test_split(tr_vl_keys, test_size=val_size, random_state=seed, shuffle=True)
+    
+    return tr_keys, vl_keys, ts_keys
+
 
 def generate_data_cfg(
+        pdb_id_ls: list,
         prep_dir_lig: str,
         prep_dir_ptn: str,
         save_dir: str,
@@ -315,15 +340,35 @@ def generate_data_cfg(
         voxel_size: int = 2,
         n_voxels: int = 32
     ):
-    
+    print("3. Splitting data and generating data configuration files")
     out_cfg_name = os.path.join(save_dir, "data_config_" + datetime.now().strftime("%y%m%d-%H%M%S") + ".json")
-    breakpoint()
-    # preprocessed data 받아서, data 정보가 담긴 cfg 파일 생성
-    # 
-    # match preprocessed protein and ligand files
-    # print how many files were not successfully preprocessed
-    pass
+    
+    data_cfg = {}
+    
+    data_cfg["created_at"] = datetime.now().strftime("%Y-%m-%d")
+    data_cfg["seed"] = seed
+    data_cfg["voxel_size"] = voxel_size
+    data_cfg["n_voxels"] = n_voxels
+    data_cfg["index_file"] = index_file
 
+    data_cfg["vox_dir"] = prep_dir_ptn
+    data_cfg["lig_dir"] = prep_dir_lig
+
+    data_cfg["val_size"] = val_size
+    data_cfg["tr_keys"] = None
+    data_cfg["vl_keys"] = None
+    data_cfg["ts_keys"] = None    
+    
+    tr_keys, vl_keys, ts_keys = split_data_keys(pdb_id_ls, val_size, seed, test_key_file)
+    data_cfg["tr_keys"] = tr_keys
+    data_cfg["vl_keys"] = vl_keys
+    data_cfg["ts_keys"] = ts_keys
+
+    with open(out_cfg_name, "w") as fp:
+        json.dump(data_cfg, fp, ensure_ascii=False, indent=4)
+        print(f"  - Data configuration file successfully generated: {out_cfg_name}")
+
+    return data_cfg
 
 def main():
     args = get_arguments()
@@ -332,13 +377,14 @@ def main():
     save_dir_lig = args.save_dir + "/input_ligand"
     save_dir_ptn = args.save_dir + "/input_protein"
     
-    # print_args(args)
+    print_args(args)
     
     featurize_ligand(
         smiles_csv=args.smiles_csv,
         pdb_id_ls=pdb_id_ls,
         save_dir=save_dir_lig
     )
+    
     voxelize_protein(
         data_structure=args.data_structure,
         raw_dir=args.raw_dir,
@@ -347,19 +393,20 @@ def main():
         voxel_size=args.voxel_size,
         n_voxels=args.n_voxels
     )
+    
     generate_data_cfg(
+        pdb_id_ls=pdb_id_ls,
         prep_dir_lig=save_dir_lig,
         prep_dir_ptn=save_dir_ptn,
         save_dir=args.save_dir,
         seed=args.seed,
         index_file=args.index_file,
         val_size=args.val_size,
-        test_key_file=args.test_key_file, # -> 있으면 반영해서 split, 없으면 랜덤 스플릿 (with log)
+        test_key_file=args.test_key_file,
         voxel_size=args.voxel_size,
         n_voxels=args.n_voxels
     )
     
-    pass
 
 if __name__ == "__main__":
     main()
