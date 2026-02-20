@@ -3,13 +3,14 @@ import os, sys
 import numpy as np
 import torch
 import glob
+from typing import Literal
 from torch.utils.data import Dataset, DataLoader
 from torch_geometric.data import Data
 from tqdm import tqdm
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit import RDLogger                                                                                                                                                               
-RDLogger.DisableLog('rdApp.*')  # 여기 중요!! rdkit sdf 읽을때 kekulize error 누르는 부분
+RDLogger.DisableLog('rdApp.*')
 
 def create_mol_from_file(file_path: str, retry_without_sanitize: bool = False) -> Chem.Mol:
     '''
@@ -246,18 +247,22 @@ class LigandPreprocessor:
     
 
 class CustomDataset(Dataset):
-    def __init__(self, data_zip_paths: list[tuple], index_dict: dict):
-        self.data_zip_paths = data_zip_paths
+    def __init__(self, zip_paths: list[tuple], index_dict: dict, desc: Literal["training", "validation", "test"]):
+        self.zip_paths = zip_paths
         self.index_dict = index_dict
         
-        # file 유효성 검사
+        # check validity of the ligand pkl file
         self.usable_zip_paths = []
-        for path_pair in tqdm(data_zip_paths, desc="Validating ligand files..."):
+        for path_pair in tqdm(zip_paths, desc=f"Checking validity of {desc} ligand files"):
             vox_path, lig_path = path_pair
             if check_usable_lig(lig_path):
                 self.usable_zip_paths.append(path_pair)
         
-        print(f"Dataset initialized: {len(self.usable_zip_paths)} valid files from {len(data_zip_paths)}")
+        invalid_lig_count = len(zip_paths) - len(self.usable_zip_paths)
+        if invalid_lig_count == 0:
+            print("  All ligand input files are valid\n")
+        else:
+            print(f"  {invalid_lig_count} invalid ligand files were dropped from the {desc} dataset\n")
             
     def __getitem__(self, index):
         sample = {}
@@ -278,7 +283,6 @@ class CustomDataset(Dataset):
         if self.index_dict:
             b_aff = self.index_dict.get(data_key, None)
         
-        # protein 처리
         with open(vox_path, 'rb') as fp:
             voxels = pickle.load(fp)
             
@@ -295,100 +299,3 @@ class CustomDataset(Dataset):
     
     def __len__(self):
         return len(self.usable_zip_paths)
-    
-    
-# class PreloadedDataset(Dataset):
-#     """Under-developing."""
-#     def __init__(self, data_zip_paths: list[tuple], index_dict: dict):
-#         self.index_dict = index_dict
-#         self.filtered_paths = []
-#         self.preloaded_data = []
-        
-#         print(f"시작: 데이터셋 유효성 검사 및 메모리 로드 ({len(data_zip_paths)} 파일)")
-        
-#         # 유효성 검사 및 데이터 미리 로드
-#         for path_pair in tqdm(data_zip_paths, desc="데이터 로딩 중"):
-#             vox_path, lig_path = path_pair
-            
-#             # 리간드 유효성 검사
-#             if not self._is_valid_ligand(lig_path):
-#                 continue
-                
-#             # 데이터 로드
-#             try:
-#                 data_key = os.path.basename(os.path.dirname(lig_path))
-                
-#                 # Protein voxel 로드
-#                 with open(vox_path, 'rb') as fp:
-#                     voxels = pickle.load(fp)
-                
-#                 structure = voxels[..., :11]
-#                 pocket_label = voxels[..., -1:]
-                
-#                 # Ligand 데이터 로드
-#                 ligand_data = encode_ligand_to_Data(lig_path)
-                
-#                 # 결합 친화도 정보
-#                 b_aff = None
-#                 if self.index_dict:        
-#                     b_aff = self.index_dict.get(data_key, None)
-                
-#                 # 전처리된 데이터 저장
-#                 sample = {
-#                     'data_key': data_key,
-#                     "voxel": np.transpose(structure, (3, 0, 1, 2)),
-#                     "pocket_label": np.transpose(pocket_label, (3, 0, 1, 2)),
-#                     "ligand_data": ligand_data,
-#                     "b_aff": b_aff
-#                 }
-                
-#                 self.preloaded_data.append(sample)
-#                 self.filtered_paths.append(path_pair)
-                
-#             except Exception as e:
-#                 print(f"데이터 로드 실패: {vox_path}, {lig_path}, 오류: {e}")
-        
-#         print(f"완료: {len(self.preloaded_data)}/{len(data_zip_paths)} 데이터 로드됨")
-        
-#         # 메모리 사용량 대략 계산
-#         sample_mem = sum(sys.getsizeof(x) for x in self.preloaded_data[0].values()) if self.preloaded_data else 0
-#         total_mem = sample_mem * len(self.preloaded_data) / (1024**3)  # GB 단위
-#         print(f"예상 메모리 사용량: 약 {total_mem:.2f} GB")
-    
-#     def _is_valid_ligand(self, lig_path):
-#         """리간드 파일 유효성 검사"""
-#         try:
-#             # 분자 객체 생성
-#             mol = create_mol_from_file(lig_path, retry_without_sanitize=True)
-#             if mol is None:
-#                 return False
-            
-#             # 분자 기본 검증
-#             if mol.GetNumAtoms() == 0 or not mol.GetConformer().Is3D():
-#                 return False
-            
-#             # 수소 제거 시도
-#             mol_processed = None
-#             rm_hydrogen_methods = [
-#                 lambda m: Chem.RemoveHs(m),
-#                 lambda m: Chem.RemoveHs(m, implicitOnly=True),
-#                 lambda m: Chem.RemoveHs(m, implicitOnly=True, sanitize=False)
-#             ]
-            
-#             for method in rm_hydrogen_methods:
-#                 try:
-#                     mol_processed = method(mol)
-#                     break
-#                 except:
-#                     continue
-            
-#             return mol_processed is not None
-            
-#         except Exception:
-#             return False
-    
-#     def __getitem__(self, index):
-#         return self.preloaded_data[index]
-    
-#     def __len__(self):
-#         return len(self.preloaded_data)

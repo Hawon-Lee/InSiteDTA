@@ -103,7 +103,7 @@ def parse_arguments():
 
     # optimizer    
     parser.add_argument("--optimizer", type=str, default="adamw", choices=["adamw", "adam"], help="Optimizer types")
-    parser.add_argument("--weight_decay", type=float, default=1e-3, help="Weight decay for Adam optimizer")
+    parser.add_argument("--weight_decay", type=float, default=1e-3, help="Weight decay for Adam(w) optimizer")
 
     # scheduler
     parser.add_argument("--scheduler_T0", type=int, default=100, 

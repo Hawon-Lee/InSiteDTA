@@ -2,6 +2,9 @@ import os, json, sys, random
 import numpy as np
 from glob import glob
 from tqdm import tqdm
+from typing import Literal
+from pathlib import Path
+from collections import defaultdict
 
 import torch
 from torch.utils.data import DataLoader
@@ -11,10 +14,12 @@ from .dataset import CustomDataset
 
 sys.path.append("../")
 
+
 def seed_generator(seed):
     g = torch.Generator()
     g.manual_seed(seed)
     return g
+
 
 def seed_worker(worker_id):
     worker_seed = (torch.initial_seed() + worker_id) % 2**32
@@ -22,10 +27,11 @@ def seed_worker(worker_id):
     random.seed(worker_seed)
     torch.manual_seed(worker_seed)
 
+
 def collate_as_dict(items: list) -> dict[str, any]:
     """
     Efficiently collates a list of dictionaries into batched tensors and objects.
-    
+
     Args:
         items: List of dictionaries containing arrays, tensors, strings, or Data objects
     Returns:
@@ -33,11 +39,11 @@ def collate_as_dict(items: list) -> dict[str, any]:
     """
     if not items:
         return {}
-    
+
     # Pre-compute batch size and get reference keys from first item
     batch_size = len(items)
     reference_item = items[0]
-    
+
     # Initialize result containers for each key based on first item's types
     batches = {}
     for key, value in reference_item.items():
@@ -49,17 +55,17 @@ def collate_as_dict(items: list) -> dict[str, any]:
                     max_dims.append(item[key].shape)
             max_shape = np.maximum.reduce(max_dims)
             batches[key] = np.zeros((batch_size, *max_shape))
-            
+
         elif isinstance(value, str):
             batches[key] = ["" for _ in range(batch_size)]
-            
+
         elif isinstance(value, Data):
             # Create list to collect Data objects for batch conversion
             batches[key] = []
-            
+
         elif isinstance(value, float):
             batches[key] = torch.zeros(batch_size, dtype=torch.float32)
-            
+
         else:
             batches[key] = np.zeros(batch_size)
 
@@ -67,20 +73,20 @@ def collate_as_dict(items: list) -> dict[str, any]:
     for batch_idx, item in enumerate(items):
         if item is None:
             continue
-            
+
         for key, value in item.items():
             if isinstance(value, (np.ndarray, torch.Tensor)):
                 # Efficient slicing using pre-computed shapes
                 slices = tuple(slice(0, dim) for dim in value.shape)
                 batches[key][(batch_idx, *slices)] = value
-                
+
             elif isinstance(value, Data):
                 # Collect Data objects for batch conversion
                 batches[key].append(value)
-            
+
             elif isinstance(batches[key], torch.Tensor):
                 batches[key][batch_idx] = torch.tensor(value, dtype=torch.float32)
-                
+
             else:
                 batches[key][batch_idx] = value
 
@@ -102,179 +108,79 @@ def collate_as_dict(items: list) -> dict[str, any]:
 
 
 class MasterDataLoader:
-    def __init__(self, data_config, train_config):
-        """
-        Args:
-            data_config (dict)
-            train_config (namespace)
-        """
-        
-        # From data_config
-        self.seed = data_config["seed"]
-        self.lig_file_format = data_config["lig_file_format"]
+    def __init__(self, data_cfg, seed, batch_size, num_workers):
 
-        self.train_source_name = data_config["train_source_name"]
-        self.train_lig_dir = data_config["train_lig_dir"]
-        self.train_vox_dir = data_config["train_vox_dir"]
-        
-        self.test_source_name = data_config["test_source_name"]
-        self.test_lig_dir = data_config["test_lig_dir"]
-        self.test_vox_dir = data_config["test_vox_dir"]
-        
-        self.index_dir = data_config["index_dir"]
-        self.train_index_dict = self.read_index_file(self.train_source_name)
-        self.test_index_dict = self.read_index_file(self.test_source_name)
+        self.index_dict = {}
+        if data_cfg["index_file"]:
+            with open(data_cfg["index_file"], "r") as fp:
+                self.index_dict = json.load(fp)
 
-        self.tr_data_keys = data_config["tr_data_keys"]
-        self.vl_data_keys = data_config["vl_data_keys"]
-        self.ts_data_keys = data_config["ts_data_keys"]
-        
-        self.filter_sw_similarity = data_config["filter_sw_similarity"]
-        self.sim_threshold = data_config["sim_threshold"]
-        self.keep_filtered = data_config["keep_filtered"]
-            
-        self.batch_size = train_config.batch_size
-        self.num_workers = train_config.num_workers
-        
-    def read_index_file(self, dataset_name):
-        index_file = {}
-        
-        if dataset_name == "PDBbind2020":
-            index_path = os.path.join(self.index_dir, "PDBbind_aff_index.json")
-        elif dataset_name in ("Davis", "Filtered_Davis"):
-            index_path = os.path.join(self.index_dir, "Davis_aff_index.json")
-        elif dataset_name == "Kiba":
-            index_path = os.path.join(self.index_dir, "Kiba_aff_index.json")
-        
-        try:
-            with open(index_path, 'r') as fp:
-                index_file = json.load(fp)
-        except:
-            print("No binding affinity index file was found. All binding affinity values will be set to NaN.")
-            return {}
-        
-        return index_file
+        self.vox_dir = data_cfg["vox_dir"]
+        self.lig_dir = data_cfg["lig_dir"]
 
-    def get_vox_lig_zip_paths(self, vox_dir, lig_dir, keys, lig_file_format="sdf", desc="training"):
-        """
-        Match voxel files and ligand files based on keys and return a zipped list
-        """
-        from pathlib import Path
-        from collections import defaultdict
-        
+        self.tr_keys = data_cfg["tr_keys"]
+        self.vl_keys = data_cfg["vl_keys"]
+        self.ts_keys = data_cfg["ts_keys"]
+
+        self.seed = seed
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+    def get_zip_paths(self, keys: list, desc: Literal["training", "validation", "test"]) -> list[tuple[str, str]]:
+        # Find preprocessed voxel and ligand files and matching them
+
         vox_lig_pairs = []
-        is_nested = True
-        
-        if lig_file_format == "rdmol":
-            lig_file_format = "pkl"
-            is_nested = False
-        
-        # 1. Scan all voxel files at once and group by key
-        print(f"Scanning {desc} voxel files in {vox_dir}...")
-        vox_files_by_key = defaultdict(list)
-        try:
-            with os.scandir(vox_dir) as entries:
-                for entry in entries:
-                    if entry.is_file() and "dim" in entry.name:
-                        for key in keys:
-                            if key in entry.name:
-                                vox_files_by_key[key].append(entry.path)
-                                break  # Use only the first matching key
-        except (PermissionError, OSError) as e:
-            print(f"Error scanning vox_dir: {e}")
-            return []
-        
-        # 2. Efficiently find ligand files
-        print(f"Scanning {desc} ligand files in {lig_dir}...")
-        lig_files_by_key = {}
-        
-        if is_nested:
-            # nested structure: find files in each key directory
-            lig_base_path = Path(lig_dir)
-            for key in keys:
-                key_dir = lig_base_path / key
-                if key_dir.exists() and key_dir.is_dir():
-                    lig_files = list(key_dir.glob(f"*.{lig_file_format}"))
-                    if lig_files:
-                        lig_files_by_key[key] = [str(f) for f in sorted(lig_files)]
-        else:
-            # flat structure: find directly by filename
-            lig_base_path = Path(lig_dir)
-            if lig_base_path.exists():
-                for key in keys:
-                    lig_file = lig_base_path / f"{key}_ligand.{lig_file_format}"
-                    if lig_file.exists():
-                        lig_files_by_key[key] = [str(lig_file)]
-        
-        # 3. Match and create pairs
-        print(f"Matching {desc} vox-lig pairs...")
-        matched_keys = 0
-        
-        for key in keys:
-            vox_files = sorted(vox_files_by_key.get(key, []))
-            lig_files = lig_files_by_key.get(key, [])
+        valid_vox_count = 0
+        valid_lig_count = 0
+
+        for k in tqdm(keys, desc=f"Scanning {desc} keys"):
+            vox_path = os.path.join(self.vox_dir, f"{k}_voxel.pkl")
+            lig_path = os.path.join(self.lig_dir, f"{k}_ligand.pkl")
             
-            if not vox_files or not lig_files:
-                continue
+            if os.path.exists(vox_path):
+                valid_vox_count += 1
                 
-            # Matching strategy based on file count
-            if len(vox_files) == len(lig_files): # 1:1 matching
-                vox_lig_pairs.extend(zip(vox_files, lig_files))
-                matched_keys += 1
-            elif len(vox_files) == 1: # 1 voxel -> match with first ligand
-                vox_lig_pairs.append((vox_files[0], lig_files[0]))
-                matched_keys += 1
-            elif len(lig_files) == 1: # 1 ligand -> match with first voxel
-                vox_lig_pairs.append((vox_files[0], lig_files[0]))
-                matched_keys += 1
-        
-        print(f"Found {len(vox_lig_pairs)} pairs from {matched_keys}/{len(keys)} keys")
-        print(f"- Samples: Lig {len(lig_files_by_key)}, Ptn {len(vox_files_by_key)} \n")
-        return vox_lig_pairs    
-    
-    def get_vox_file_paths(self, vox_dir, keys, desc="training"):
-        vox_file_paths = []
-        vox_file_list = os.listdir(vox_dir)
-        
-        for f in tqdm(vox_file_list, desc=f"Searching {desc} voxel data..."):
-            if "dim" in f and any(key in f for key in keys):
-                vox_file_paths.append(os.path.join(vox_dir, f))
+            if os.path.exists(lig_path):
+                valid_lig_count += 1
 
-        return sorted(vox_file_paths)
-        
-    def get_lig_file_paths(self, lig_dir, keys, lig_file_format="sdf", desc="training"):
-        lig_file_paths = []
-        is_nested = True
-        
-        if lig_file_format == "rdmol":
-            lig_file_format = "pkl"
-            is_nested = False
-        
-        if is_nested:
-            patterns = [os.path.join(lig_dir, k, f"*.{lig_file_format}") for k in keys]
-        else:
-            patterns = [f"{lig_dir}/{k}_ligand.{lig_file_format}" for k in keys]
-            
-        for pattern in tqdm(patterns, desc=f"Searching {desc} voxel data..."):
-            lig_file_paths.extend(glob(pattern))
-        
-        return sorted(lig_file_paths)
+            if os.path.exists(vox_path) and os.path.exists(lig_path):
+                vox_lig_pairs.append((vox_path, lig_path))
 
+        print(f"  Target : {len(keys)} keys")
+        print(f"  Voxel : {valid_vox_count} / {len(keys)} found from {self.vox_dir}")
+        print(f"  Ligand : {valid_lig_count} / {len(keys)} found from {self.lig_dir}")
+        print(f"  Matched : {len(vox_lig_pairs)} pairs\n")
+        
+        return vox_lig_pairs
+        
     def get_tr_vl_dataset(self):
-        tr_zip_paths = self.get_vox_lig_zip_paths(self.train_vox_dir, self.train_lig_dir, self.tr_data_keys, self.lig_file_format, desc="training")
-        vl_zip_paths = self.get_vox_lig_zip_paths(self.train_vox_dir, self.train_lig_dir, self.vl_data_keys, self.lig_file_format, desc="validation")
-        
-        tr_dataset = CustomDataset(data_zip_paths=tr_zip_paths, index_dict=self.train_index_dict)
-        vl_dataset = CustomDataset(data_zip_paths=vl_zip_paths, index_dict=self.train_index_dict)
+        tr_zip_paths = self.get_zip_paths(
+            self.tr_keys,
+            desc="training",
+        )
+        vl_zip_paths = self.get_zip_paths(
+            self.vl_keys,
+            desc="validation",
+        )
+
+        tr_dataset = CustomDataset(
+            zip_paths=tr_zip_paths, index_dict=self.index_dict, desc="training"
+        )
+        vl_dataset = CustomDataset(
+            zip_paths=vl_zip_paths, index_dict=self.index_dict, desc="validation"
+        )
         return tr_dataset, vl_dataset
-    
-    def get_tr_vl_dataloader(self):
+
+    def get_tr_vl_loader(self):
         tr_dataset, vl_dataset = self.get_tr_vl_dataset()
         
-        tr_g = seed_generator(self.seed)
-        vl_g = seed_generator(self.seed + 1)
-        
-        tr_dataloader = DataLoader(
+        if self.seed != -1:
+            tr_g = seed_generator(self.seed)
+            vl_g = seed_generator(self.seed + 1)
+        else:
+            tr_g, vl_g = None, None
+
+        tr_loader = DataLoader(
             tr_dataset,
             batch_size=self.batch_size,
             collate_fn=collate_as_dict,
@@ -282,9 +188,10 @@ class MasterDataLoader:
             worker_init_fn=seed_worker,
             generator=tr_g,
             pin_memory=True,
-            shuffle=True)
-        
-        vl_dataloader = DataLoader(
+            shuffle=True,
+        )
+
+        vl_loader = DataLoader(
             vl_dataset,
             batch_size=self.batch_size,
             collate_fn=collate_as_dict,
@@ -292,29 +199,31 @@ class MasterDataLoader:
             worker_init_fn=seed_worker,
             generator=vl_g,
             pin_memory=True,
-            shuffle=False)
-        
-        return tr_dataloader, vl_dataloader
-    
-    def get_ts_dataset(self):
-        ts_zip_paths = self.get_vox_lig_zip_paths(self.test_vox_dir, self.test_lig_dir, self.ts_data_keys, self.lig_file_format, desc="test")
+            shuffle=False,
+        )
 
-        # ts_vox_files = self.get_vox_file_paths(self.test_vox_dir, self.ts_data_keys, desc="test")
-        # ts_lig_files = self.get_lig_file_paths(self.test_lig_dir, self.ts_data_keys, lig_file_format=self.lig_file_format, desc="test")
-        # # protein-ligand file key matching이 잘 되었는지 점검
-        # if not self.check_key_matches(ts_vox_files, ts_lig_files):
-        #     raise ValueError("Mismatched keys found between voxel and ligand files.")
-        # ts_zip_paths = list(zip(ts_vox_files, ts_lig_files))
-        
-        ts_dataset = CustomDataset(data_zip_paths=ts_zip_paths, index_dict=self.test_index_dict)
+        return tr_loader, vl_loader
+
+    def get_ts_dataset(self):
+        ts_zip_paths = self.get_zip_paths(
+            self.ts_keys,
+            desc="test",
+        )
+
+        ts_dataset = CustomDataset(
+            zip_paths=ts_zip_paths, index_dict=self.index_dict, desc="test"
+        )
         return ts_dataset
-    
-    def get_ts_dataloader(self):
+
+    def get_ts_loader(self):
         ts_dataset = self.get_ts_dataset()
-        
-        ts_g = seed_generator(self.seed + 2)
-        
-        ts_dataloader = DataLoader(
+
+        if self.seed != -1:
+            ts_g = seed_generator(self.seed + 2)
+        else:
+            ts_g = None
+            
+        ts_loader = DataLoader(
             ts_dataset,
             batch_size=self.batch_size,
             collate_fn=collate_as_dict,
@@ -322,19 +231,7 @@ class MasterDataLoader:
             worker_init_fn=seed_worker,
             generator=ts_g,
             pin_memory=True,
-            shuffle=False)
-        
-        return ts_dataloader
-    
-    def get_dataloader_from_dataset(self, dataset):
-        dataloader = DataLoader(
-            dataset,
-            batch_size=self.batch_size,
-            collate_fn=collate_as_dict,
-            num_workers=self.num_workers,
-            worker_init_fn=seed_worker,
-            pin_memory=True,
-            shuffle=False
+            shuffle=False,
         )
 
-        return dataloader
+        return ts_loader
