@@ -28,32 +28,81 @@ conda activate insite
 - PyTorch Geometric: 2.6.1
 - CUDA: 11.8
 
-## Quick Start
-```bash
-python inference.py \
-    --pdb_path <path_to_protein.pdb> \
-    --smiles <ligand_smiles>
-```
+## Quick Start Example
 
-**Example:**
 ```bash
-python inference.py \
+python 01-inference.py \
     --pdb_path ./src/data/sample/1bzc_protein.pdb \
     --smiles "[O-]C(=O)CC[C@@H](C(=O)N)NC(=O)c1ccc2c(c1)ccc(c2)C(P(=O)([O-])[O-])(F)F"
 ```
+
+## Training With Your Own Data
+
+### Step 1: Prepare Data Structure
+
+Organize your data in nested structure (PDBbind format):
+```
+raw_data/
+├── {pdb_id}/
+│   ├── {pdb_id}_protein.pdb
+│   └── {pdb_id}_pocket.pdb
+...
+```
+
+Prepare SMILES CSV file (`smiles.csv`):
+```csv
+PDB_ID,Canonical SMILES
+1abc,CCO
+1def,c1ccccc1
+```
+
+For affinity prediction, prepare affinity index JSON (`affinity.json`):
+```json
+{"1abc": 5.2, "1def": 7.8}
+```
+> **Note:** If you only want to train binding site prediction, omit `--index_file` argument in preprocessing.
+
+### Step 2: Preprocess
+
+```bash
+python 02-preprocess.py \
+    --raw_dir ./raw_data \
+    --save_dir ./preprocessed \
+    --smiles_csv ./smiles.csv \
+    --index_file ./affinity.json \
+    --test_key_file ./test_keys.txt \
+    --voxel_size 2 \
+    --n_voxels 32 \
+    --device 0
+```
+
+This generates preprocessed data and `data_config_*.json` in `./preprocessed/`.
+
+### Step 3: Train
+
+```bash
+python 03-train.py \
+    --data_config ./preprocessed/data_config_*.json \
+    --save_dir ./checkpoints \
+    --gpu 0 \
+    --epochs 300 \
+    --batch_size 48
+```
+
+Trained model will be saved as `./checkpoints/{timestamp}.pt`.
 
 ## Reproduce Paper Results
 
 Run evaluation on three benchmark datasets:
 ```bash
 # Evaluate on Coreset_crystal
-python reproduce.py --data crystal --device 0
+python 04-reproduce.py --data crystal --batch_size 64 --device 0
 
 # Evaluate on Coreset_redocked  
-python reproduce.py --data redocked --device 0
+python 04-reproduce.py --data redocked --batch_size 64 --device 0
 
 # Evaluate on Coreset_p2rank
-python reproduce.py --data p2rank --device 0
+python 04-reproduce.py --data p2rank --batch_size 64 --device 0
 ```
 
 The script will:
@@ -64,7 +113,15 @@ The script will:
 
 ## Output
 
-The model outputs predicted binding affinity in pK scale (higher values indicate stronger binding).
+**Inference (01-inference.py):**
+- Predicted binding affinity in pK scale (higher values = stronger binding)
+
+**Training (03-train.py):**
+- Model checkpoint: `{save_dir}/{timestamp}.pt`
+- Training results: `{save_dir}/{timestamp}_results.json`
+
+**Reproduce (04-reproduce.py):**
+- Performance metrics (mean ± std across 3 models): PCC, RMSE, MAE
 
 ## Data
 
