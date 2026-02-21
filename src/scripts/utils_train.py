@@ -5,8 +5,6 @@ import random
 import torch
 import torch.backends.cudnn as cudnn
 import torch.nn as nn
-import torch.nn.functional as F
-
 
 def add_gaussian_noise(labels, noise_std):
     noise = torch.normal(mean=0.0, std=noise_std, size=labels.shape).to(labels.device)
@@ -18,7 +16,7 @@ def add_gaussian_noise(labels, noise_std):
 
 
 class EarlyStopping:
-    def __init__(self, patience=15, min_delta=1e-4, trace_func=print):
+    def __init__(self, patience=15, min_delta=0, trace_func=print):
         """
         Early stopping implementation
 
@@ -48,7 +46,7 @@ class EarlyStopping:
             self.current_epoch = epoch
 
         # Check for improved validation loss - uses same condition as train_model
-        if val_loss < self.best_loss:
+        if val_loss + self.min_delta < self.best_loss:
             self.best_loss = val_loss
             self.counter = 0
             self.best_epoch = self.current_epoch

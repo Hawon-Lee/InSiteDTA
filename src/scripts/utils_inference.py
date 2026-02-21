@@ -37,9 +37,9 @@ def calc_metrics(pred: Union[np.ndarray, torch.Tensor, list], target:Union[np.nd
     
     pcc, rmse, mae = calc_PCC(pred, target), calc_RMSE(pred, target), calc_MAE(pred, target)
 
-    print("     [Results]")
-    print("     - PCC :", pcc.round(3))
-    print("     - RMSE:", rmse.round(3))
-    print("     - MAE :", mae.round(3))
+    print("[Results]")
+    print("  PCC :", pcc.round(3))
+    print("  RMSE:", rmse.round(3))
+    print("  MAE :", mae.round(3))
 
     return pcc, rmse, mae

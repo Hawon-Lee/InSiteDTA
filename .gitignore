@@ -32,3 +32,5 @@ logs/
 # Custom
 model_input*
 preprocessed_input
+test_scripts.sh
+wandb

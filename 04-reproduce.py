@@ -13,6 +13,7 @@ from src.scripts.preprocess.generate_mol_object import generate_mol_object, gene
 from src.scripts.preprocess.ligand_featurization import encode_ligand_to_Data
 from src.scripts.preprocess.protein_voxelization import ProteinVoxelizer
 from src.scripts.utils_inference import calc_metrics
+from src.scripts.utils import print_args
 
 
 def get_arguments():
@@ -143,9 +144,10 @@ def inference(lig_dir="./model_input/ligands", ptn_dir="./model_input/proteins",
 def main():
     args = get_arguments()
     data = args.data
-    device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
-    
+    device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"; args.device = device
     batch_size = args.batch_size
+    print_args(args)
+    
     index = "./src/data/index/affinity_index_pdbbind2020.json"
     ckpt_ls = [
         "./src/ckpt/run_1.pt",
@@ -155,14 +157,6 @@ def main():
     data_dir = f"./src/data/coreset_{data}"
     smi_csv = "./src/data/index/ligand_smiles_coreset.csv"
     input_dir = f"./model_input_{data}"
-    
-    ### main functions
-    print("╔═══════════════════════════════════╗")
-    print("║     Start Reproducing Results     ║")
-    print("╚═══════════════════════════════════╝")
-    print(f"- dataset: coreset_{data}")
-    print(f"- batch size: {batch_size}")
-    print(f"- device: {device}\n")
 
     prep_ligand(smi_csv=smi_csv, input_dir=input_dir)
     prep_protein(data_dir=data_dir, input_dir=input_dir, device=device)

@@ -1,8 +1,8 @@
-# TODO: flatten data structure 구현 (단백질 폴더에 .pdb 만 있고(pocket 유무도 고려) / 리간드는 무조건 ligand smiles 형태로 제시)
-# TODO: implement first-channel representation
-# TODO: args.seed -> 0 for random 을 -1 for random 으로 고치기
+# TODO: Implement flatten data structure
+# TODO: Change to first-channel representation
+# TODO: args.seed -> 0 for random to -1 for random
 
-import os, sys, argparse, pickle, json
+import os, argparse, pickle, json
 import numpy as np
 import pandas as pd
 import torch
@@ -269,6 +269,7 @@ def generate_data_cfg(
         json.dump(data_cfg, fp, ensure_ascii=False, indent=4)
         print(f"  - Data configuration file successfully generated: {out_cfg_name}")
 
+    print(f"4. Data split completed - Train: {len(tr_keys)}, Validation: {len(vl_keys)}, Test: {len(ts_keys)}")
     return data_cfg
 
 

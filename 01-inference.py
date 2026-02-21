@@ -1,26 +1,22 @@
 # TODO: implement an ensemble inference with three checkpoint
 
-import argparse, os, pickle, json
+import argparse
 import numpy as np
-import pandas as pd
-
-from typing import Literal
-from tqdm import tqdm
 
 import torch
 from torch_geometric.data import Batch
 
-from src.model.model import InSiteDTA
-from src.preprocess.generate_mol_object import generate_mol_object, generate_conformers
-from src.preprocess.ligand_featurization import encode_ligand_to_Data
-from src.preprocess.protein_voxelization import ProteinVoxelizer
+from src.scripts.model.model import InSiteDTA
+from src.scripts.preprocess.generate_mol_object import generate_mol_object, generate_conformers
+from src.scripts.preprocess.ligand_featurization import encode_ligand_to_Data
+from src.scripts.preprocess.protein_voxelization import ProteinVoxelizer
 
 
 def get_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pdb_path", type=str, required=True, help="Path to protein PDB file")
     parser.add_argument("--smiles", type=str, required=True, help="SMILES string of the ligand")
-    parser.add_argument("--ckpt", type=str, default="./src/model/ckpt/run_2.pt", help="Path to model checkpoint file")
+    parser.add_argument("--ckpt", type=str, default="./src/ckpt/run_2.pt", help="Path to model checkpoint file")
     return parser.parse_args()
 
 

@@ -28,37 +28,68 @@ conda activate insite
 - PyTorch Geometric: 2.6.1
 - CUDA: 11.8
 
-## Quick Start
+## Quick Start Example
 
-```bash
-python 01-inference.py \
-    --pdb_path <path_to_protein.pdb> \
-    --smiles <ligand_smiles>
-```
-
-**Example:**
 ```bash
 python 01-inference.py \
     --pdb_path ./src/data/sample/1bzc_protein.pdb \
     --smiles "[O-]C(=O)CC[C@@H](C(=O)N)NC(=O)c1ccc2c(c1)ccc(c2)C(P(=O)([O-])[O-])(F)F"
 ```
 
-## Standard Training Procedure
-```bash
-sh standard_train.sh 를 실행하세요
-```
-
 ## Training With Your Own Data
-```bash
-python 02-preprocess.py --(당신은 2개의 raw data 구조를 채택할 수 있습니다.)
-하나는 pdbbind-like architecture (ligand structure info 가 있을 경우 권장)
-(data/{pdb_id}/{pdb_id}_protein.pdb)
 
-다른 하나는 flatten architecture (ligand structure info 가 없고 smiles 만 있을 경우 권장)
-(data/proteins/{*pdb_id}_protein.pdb)
+### Step 1: Prepare Data Structure
+
+Organize your data in nested structure (PDBbind format):
+```
+raw_data/
+├── {pdb_id}/
+│   ├── {pdb_id}_protein.pdb
+│   └── {pdb_id}_pocket.pdb
+...
 ```
 
-// [TODO]: 만약 binding site 만 예측하고 싶다면 -> index file 을 None 으로 주세요
+Prepare SMILES CSV file (`smiles.csv`):
+```csv
+PDB_ID,Canonical SMILES
+1abc,CCO
+1def,c1ccccc1
+```
+
+For affinity prediction, prepare affinity index JSON (`affinity.json`):
+```json
+{"1abc": 5.2, "1def": 7.8}
+```
+> **Note:** If you only want to train binding site prediction, omit `--index_file` argument in preprocessing.
+
+### Step 2: Preprocess
+
+```bash
+python 02-preprocess.py \
+    --raw_dir ./raw_data \
+    --save_dir ./preprocessed \
+    --smiles_csv ./smiles.csv \
+    --index_file ./affinity.json \
+    --test_key_file ./test_keys.txt \
+    --voxel_size 2 \
+    --n_voxels 32 \
+    --device 0
+```
+
+This generates preprocessed data and `data_config_*.json` in `./preprocessed/`.
+
+### Step 3: Train
+
+```bash
+python 03-train.py \
+    --data_config ./preprocessed/data_config_*.json \
+    --save_dir ./checkpoints \
+    --gpu 0 \
+    --epochs 300 \
+    --batch_size 48
+```
+
+Trained model will be saved as `./checkpoints/{timestamp}.pt`.
 
 ## Reproduce Paper Results
 
@@ -82,7 +113,15 @@ The script will:
 
 ## Output
 
-The model outputs predicted binding affinity in pK scale (higher values indicate stronger binding).
+**Inference (01-inference.py):**
+- Predicted binding affinity in pK scale (higher values = stronger binding)
+
+**Training (03-train.py):**
+- Model checkpoint: `{save_dir}/{timestamp}.pt`
+- Training results: `{save_dir}/{timestamp}_results.json`
+
+**Reproduce (04-reproduce.py):**
+- Performance metrics (mean ± std across 3 models): PCC, RMSE, MAE
 
 ## Data
 

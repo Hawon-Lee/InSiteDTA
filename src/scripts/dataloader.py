@@ -1,19 +1,14 @@
 import os, json, sys, random
 import numpy as np
-from glob import glob
+
 from tqdm import tqdm
 from typing import Literal
-from pathlib import Path
-from collections import defaultdict
 
 import torch
 from torch.utils.data import DataLoader
 from torch_geometric.data import Data, Batch
 
 from .dataset import CustomDataset
-
-sys.path.append("../")
-
 
 def seed_generator(seed):
     g = torch.Generator()

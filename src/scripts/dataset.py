@@ -122,10 +122,10 @@ def encode_ligand_to_Data(mol: Chem.rdchem.Mol):
     # 4. generate atomic_number z
     lig_z = lpp.get_atomic_number(mol)
     
-    # 최종 Data객체 생성    
-    ligand_data = Data(x=lig_feature, edge_index=lig_edge_indices, edge_attr=lig_edge_attr, pos=lig_pos, z=lig_z)
+    # 5. create Data object
+    lig_data = Data(x=lig_feature, edge_index=lig_edge_indices, edge_attr=lig_edge_attr, pos=lig_pos, z=lig_z)
     
-    return ligand_data
+    return lig_data
     
     
 class LigandPreprocessor:
@@ -190,8 +190,10 @@ class LigandPreprocessor:
     
     def get_lig_feature(self, mol, to_tensor=False):
         '''
-        mol 객체의 원자를 순회하면서 atom_feature 함수를 활용해 분자 feature 생성
-        to_tensor -> return을 numpy 대신 tensor
+        Generate molecular features by iterating through atoms in the mol object using atom_feature function.
+        
+        Returns:
+            Molecular feature matrix with shape [n_atoms, n_features]
         '''
         n_atoms = mol.GetNumAtoms()
         atom_features = []
@@ -215,12 +217,6 @@ class LigandPreprocessor:
         return edge_index, edge_attr
 
     def get_atom_position(self, mol, to_tensor=True, numConfs=None):
-        # 3D conformer 로 변환
-
-        # mol.RemoveAllConformers() # standardize conformation
-        # AllChem.EmbedMolecules(mol)
-        # AllChem.MMFFOptimizeMolecule(mol)
-        # 원하는 conformer 갯수만큼 슬라이싱
         if numConfs is None:
             numConfs = self.num_conformers
             
@@ -279,9 +275,9 @@ class CustomDataset(Dataset):
         
         lig_mol = create_mol_from_file(lig_path, retry_without_sanitize=True)
                 
-        b_aff = None
+        true_aff = None
         if self.index_dict:
-            b_aff = self.index_dict.get(data_key, None)
+            true_aff = self.index_dict.get(data_key, None)
         
         with open(vox_path, 'rb') as fp:
             voxels = pickle.load(fp)
@@ -292,8 +288,8 @@ class CustomDataset(Dataset):
         sample['data_key'] = data_key
         sample["voxel"] = np.transpose(structure, (3, 0, 1, 2)) # channel-first expression
         sample["pocket_label"] = np.transpose(pocket_label, (3, 0, 1, 2)) # channel-first expression
-        sample["ligand_data"] = encode_ligand_to_Data(lig_mol)
-        sample["b_aff"] = b_aff
+        sample["lig_data"] = encode_ligand_to_Data(lig_mol)
+        sample["true_aff"] = true_aff
 
         return sample
     

@@ -10,7 +10,6 @@ import wandb
 import json
 import numpy as np
 
-from typing import Literal, Optional
 from functools import partial
 from datetime import datetime
 from tqdm import tqdm
@@ -31,11 +30,11 @@ from src.scripts.utils_train import (
     add_gaussian_noise,
     EarlyStopping,
     CosineAnnealingWarmUpRestarts,
-    DiceWithLogitsLoss,
     SoftDiceWithLogitsLoss,
     calc_DCC_with_logit,
     calc_DVO_with_logit,
 )
+
 
 def get_arguments():
     parser = argparse.ArgumentParser()
@@ -196,7 +195,7 @@ def get_arguments():
 
     # loss configs
     parser.add_argument(
-        "--pocket_loss_weight",
+        "--poc_loss_weight",
         type=float,
         default=2.0,
         help="Loss weight for pocket prediction",
@@ -206,19 +205,6 @@ def get_arguments():
         type=float,
         default=0.2,
         help="Loss weight for affinity prediction",
-    )
-    parser.add_argument(
-        "--aff_loss_type",
-        type=str,
-        default="mse",
-        choices=["mse", "smooth_l1", "huber"],
-        help="Affinity prediction loss function type",
-    )
-    parser.add_argument(
-        "--pocket_loss_types",
-        type=partial(parse_to_list, type=str),
-        default="soft_dice bce",
-        help="Muitiple pocket loss types to use, seperated with single space (e.g., 'soft_dice dice bce')",
     )
 
     # optimizer
@@ -286,6 +272,12 @@ def get_arguments():
     parser.add_argument(
         "--patience", type=int, default=15, help="Early stopping patience"
     )
+    parser.add_argument(
+        "--min_delta",
+        type=float,
+        default=0,
+        help="Minimum improvement in validation loss to reset early stopping counter and save best model",
+    )
 
     # =============== Evaluation Args ===============
     parser.add_argument(
@@ -329,6 +321,8 @@ def train_model(
     voxel_size: int,
     exp_name: str,
 ):
+    print("Start training!\n")
+    os.makedirs(train_cfg["save_dir"], exist_ok=True)
 
     wandb.init(
         project="InSiteDTA",
@@ -336,18 +330,22 @@ def train_model(
         config=train_cfg,
     )
     wandb.watch(model, log="gradients", log_freq=50)
-    
+
     aug_generator = torch.Generator()
     if train_cfg["seed"] != -1:
         aug_generator.manual_seed(train_cfg["seed"])
 
-    device = torch.device(f"cuda:{train_cfg['gpu']}" if torch.cuda.is_available() else "cpu")
+    device = torch.device(
+        f"cuda:{train_cfg['gpu']}" if torch.cuda.is_available() else "cpu"
+    )
 
     model = model.to(device)
 
-    early_stopping = EarlyStopping(patience=train_cfg["patience"])    
+    early_stopping = EarlyStopping(
+        patience=train_cfg["patience"], min_delta=train_cfg["min_delta"]
+    )
     scaler = GradScaler()
-    
+
     if train_cfg["optimizer"] == "adamw":
         optimizer = optim.AdamW(
             model.parameters(),
@@ -360,7 +358,7 @@ def train_model(
             lr=train_cfg["learning_rate"],
             weight_decay=train_cfg["weight_decay"],
         )
-        
+
     scheduler = CosineAnnealingWarmUpRestarts(
         optimizer,
         T_0=train_cfg["scheduler_T0"],
@@ -370,58 +368,59 @@ def train_model(
         gamma=train_cfg["scheduler_gamma"],
     )
 
-
     aff_criterion = nn.MSELoss()
     poc_criterion_bce = nn.BCEWithLogitsLoss()
     poc_criterion_softdice = SoftDiceWithLogitsLoss()
 
-    poc_weight = train_cfg["pocket_loss_weight"]
+    poc_weight = train_cfg["poc_loss_weight"]
     aff_weight = train_cfg["aff_loss_weight"]
 
     best_vl_loss = float("inf")
     best_model = None
     nan_count_ls = []
 
-    tr_dataset_size = len(tr_loader.dataset)
     vl_dataset_size = len(vl_loader.dataset)
 
-    tr_steps_per_epoch = len(tr_loader)
-
+    # Speed-up training by using a data subset
+    tr_steps = len(tr_loader)
     if train_cfg["tr_subset_ratio"] < 1.0:
-        tr_iter_limit = int(tr_steps_per_epoch * train_cfg["tr_subset_ratio"])
-        tr_iter_limit = max(1, tr_iter_limit)
-        print(f"Speed-up: Using {train_cfg['tr_subset_ratio']*100}% data (Train: {tr_iter_limit}/{tr_steps_per_epoch}, Validation on full set")
+        tr_steps_limit = int(tr_steps * train_cfg["tr_subset_ratio"])
+        tr_steps_limit = max(1, tr_steps_limit)
+        print(
+            f"Speed-up: Using {train_cfg['tr_subset_ratio']*100}% data (Train: {tr_steps_limit}/{tr_steps}, Validation on full set"
+        )
     else:
-        tr_iter_limit = tr_steps_per_epoch
+        tr_steps_limit = tr_steps
 
-    # TRAINING
     for epoch in range(train_cfg["epochs"]):
-        # Training phase
+        # [TRAINING]
         model.train()
-        tr_recon_losses = 0
-        tr_pocket_losses = 0
-        tr_aff_losses = 0
-        tr_total_losses = 0
+        tr_poc_loss = 0
+        tr_aff_loss = 0
+        tr_total_loss = 0
         accumulation_step = 0
 
         for i, sample in enumerate(tqdm(tr_loader)):
-            if i >= tr_iter_limit:
+            if i >= tr_steps_limit:
                 break
-            voxel, pocket, ligand_data, b_aff = (
+
+            voxel, pocket, lig_data, true_aff = (
                 sample["voxel"],
                 sample["pocket_label"],
-                sample["ligand_data"],
-                sample["b_aff"],
+                sample["lig_data"],
+                sample["true_aff"],
             )
+
             if pocket.sum() == 0.0:
-                print(sample['data_key'], "has no pocket.")
-            voxel, pocket, ligand_data, b_aff = (
+                print(sample["data_key"], "has no pocket.")
+
+            voxel, pocket, lig_data, true_aff = (
                 voxel.to(device),
                 pocket.to(device),
-                ligand_data.to(device),
-                b_aff.to(device),
+                lig_data.to(device),
+                true_aff.to(device),
             )
-            
+
             # On-line data augmentation
             if (
                 torch.rand(1, generator=aug_generator).item()
@@ -429,170 +428,151 @@ def train_model(
             ):
                 voxel, pocket = rotate_3d_6faces(voxel, pocket)
 
-            b_aff = add_gaussian_noise(b_aff, noise_std=train_cfg["label_noise_std"])
+            # Add gaussian noise to affinity label
+            true_aff = add_gaussian_noise(
+                true_aff, noise_std=train_cfg["label_noise_std"]
+            )
 
-            # Zero gradients only at the beginning of accumulation
             if accumulation_step == 0:
                 optimizer.zero_grad()
 
             with autocast(device_type=device.type):
-                output_voxel, output_aff = model(voxel, ligand_data)
-                recon_voxel = output_voxel[:, :train_cfg["in_channels"], ...]
-                pred_pocket = output_voxel[:, -1:, ...]  # It's a logit.
+                pred_poc, pred_aff = model(voxel, lig_data)
 
-                # Reconstruction loss for first 11 channels
-                batch_size = voxel.size(0)
-                recon_loss = torch.tensor([0]).to(device)
-                # recon_loss *= recon_weight
-
-                pocket_loss = 0
-                for loss_type, loss_fn in pocket_loss_functions.items():
-                    pocket_loss += loss_fn(pred_pocket, pocket)
-
-                # Binding affinity loss
-                has_valid_aff = ~torch.isnan(b_aff).all()
-                if not has_valid_aff:
-                    breakpoint()
-                aff_loss = aff_criterion(output_aff, b_aff) if has_valid_aff else torch.tensor(0.0, device=voxel.device)
-                # Total loss
-                total_loss = (
-                    recon_weight * recon_loss
-                    + poc_weight * pocket_loss
-                    + aff_weight * aff_loss
+                # Calc losses
+                has_aff_labels = ~torch.isnan(true_aff).all()
+                aff_loss = (
+                    aff_criterion(pred_aff, true_aff)
+                    if has_aff_labels
+                    else torch.tensor(0.0, device=voxel.device)
                 )
-                
+                poc_loss = poc_criterion_bce(pred_poc, pocket) + poc_criterion_softdice(
+                    pred_poc, pocket
+                )
+                total_loss = aff_weight * aff_loss + poc_weight * poc_loss
+
                 # Normalize loss for gradient accumulation
                 total_loss = total_loss / train_cfg["grad_accumulation_steps"]
 
             scaler.scale(total_loss).backward()
             accumulation_step += 1
-            
+
             # Perform optimizer step only when accumulation is complete or at the end of epoch
-            if accumulation_step == train_cfg["grad_accumulation_steps"] or i == len(tr_loader) - 1:
-                # scaler.unscale_(optimizer)
-                # torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if (
+                accumulation_step == train_cfg["grad_accumulation_steps"]
+                or i == tr_steps_limit - 1
+            ):
                 scaler.step(optimizer)
                 scaler.update()
                 accumulation_step = 0  # Reset accumulation counter
 
-            # Store losses (multiply total_loss back by accumulation steps for proper logging)
-            tr_recon_losses += recon_loss.detach().item()
-            tr_pocket_losses += pocket_loss.detach().item()
-            tr_aff_losses += aff_loss.detach().item()
-            tr_total_losses += total_loss.detach().item() * train_cfg["grad_accumulation_steps"]
+            # Store loss (multiply total_loss back by accumulation steps for proper logging)
+            tr_poc_loss += poc_loss.detach().item()
+            tr_aff_loss += aff_loss.detach().item()
+            tr_total_loss += (
+                total_loss.detach().item() * train_cfg["grad_accumulation_steps"]
+            )
 
-            # del voxel, pocket, ligand_data, b_aff
-            # del output_voxel, output_aff, recon_voxel, pred_pocket
-            # del recon_loss, pocket_dice_loss, pocket_bce_loss, pocket_loss, aff_loss, total_loss
+        avg_tr_poc_loss = tr_poc_loss / tr_steps_limit
+        avg_tr_aff_loss = tr_aff_loss / tr_steps_limit
+        avg_tr_total_loss = tr_total_loss / tr_steps_limit
 
-            if i % 20 == 0:
-                torch.cuda.empty_cache()
-
-        avg_tr_recon_loss = tr_recon_losses / tr_iter_limit
-        avg_tr_pocket_loss = tr_pocket_losses / tr_iter_limit
-        avg_tr_aff_loss = tr_aff_losses / tr_iter_limit
-        avg_tr_total_loss = tr_total_losses / tr_iter_limit
-
-        # Validation phase
+        # [VALIDATION]
         model.eval()
-        vl_recon_losses = []
-        vl_pocket_losses = []
-        vl_aff_losses = []
-        vl_total_losses = []
-        vl_vDCCs = []  # voxel-base calculated DCC (not per-atomtype)
+        vl_poc_loss = []
+        vl_aff_loss = []
+        vl_total_loss = []
+        vl_DCCs = []
         vl_DVOs = []
         vl_nan_indice = []
-        vl_aff_all_preds = []
-        vl_aff_all_targets = []
+        vl_pred_aff_values = []
+        vl_true_aff_values = []
 
-        # VALIDATION
         with torch.no_grad():
             for sample in tqdm(vl_loader):
-                voxel, pocket, ligand_data, b_aff = (
+                voxel, pocket, lig_data, true_aff = (
                     sample["voxel"],
                     sample["pocket_label"],
-                    sample["ligand_data"],
-                    sample["b_aff"],
+                    sample["lig_data"],
+                    sample["true_aff"],
                 )
-                voxel, pocket, ligand_data, b_aff = (
+
+                voxel, pocket, lig_data, true_aff = (
                     voxel.to(device),
                     pocket.to(device),
-                    ligand_data.to(device),
-                    b_aff.to(device),
+                    lig_data.to(device),
+                    true_aff.to(device),
                 )
-                
-                if pocket.sum() == 0.0:
-                    print(sample['data_key'])
 
                 with autocast(device_type=device.type):
-                    output_voxel, output_aff = model(voxel, ligand_data)
-                    recon_voxel = output_voxel[:, :train_cfg["in_channels"], ...]
-                    pred_pocket = output_voxel[:, -1:, ...]
+                    pred_poc, pred_aff = model(voxel, lig_data)
 
                     batch_size = voxel.size(0)
-                    recon_loss = torch.tensor([0]).to(device)
+                    poc_loss = poc_criterion_bce(
+                        pred_poc, pocket
+                    ) + poc_criterion_softdice(pred_poc, pocket)
+                    poc_loss = poc_loss * batch_size
 
-                    pocket_loss = 0
-                    for loss_type, loss_fn in pocket_loss_functions.items():
-                        pocket_loss += loss_fn(pred_pocket, pocket) * batch_size
-                    
-                    has_valid_aff = ~torch.isnan(b_aff).all()
-                    aff_loss = aff_criterion(output_aff, b_aff) * batch_size if has_valid_aff else torch.tensor(0.0, device=voxel.device)
-
-                    total_loss = (
-                        recon_weight * recon_loss
-                        + poc_weight * pocket_loss
-                        + aff_weight * aff_loss
+                    has_aff_labels = ~torch.isnan(true_aff).all()
+                    aff_loss = (
+                        aff_criterion(pred_aff, true_aff) * batch_size
+                        if has_aff_labels
+                        else torch.tensor(0.0, device=voxel.device)
                     )
 
-                # val metrics 계산
-                vDCC, nan_index = calc_DCC_with_logit(
-                    pred_pocket,
+                    total_loss = aff_weight * aff_loss + poc_weight * poc_loss
+
+                # Cal validation metrics
+                DCC, nan_index = calc_DCC_with_logit(
+                    pred_poc,
                     pocket,
                     voxel_size=voxel_size,
                     threshold=train_cfg["DCC_threshold"],
                 )
-                    
+
                 DVO = calc_DVO_with_logit(
-                    pred_pocket, pocket, threshold=train_cfg["DVO_threshold"]
+                    pred_poc, pocket, threshold=train_cfg["DVO_threshold"]
                 )
 
-                vl_recon_losses.append(recon_loss.item())
-                vl_pocket_losses.append(pocket_loss.item())
-                vl_aff_losses.append(aff_loss.item())
-                vl_total_losses.append(total_loss.item())
-                vl_vDCCs += vDCC.tolist()
+                vl_poc_loss.append(poc_loss.item())
+                vl_aff_loss.append(aff_loss.item())
+                vl_total_loss.append(total_loss.item())
+                vl_DCCs += DCC.tolist()
                 vl_DVOs += DVO.tolist()
                 vl_nan_indice += nan_index
-                vl_aff_all_preds.append(output_aff.detach().cpu())
-                vl_aff_all_targets.append(b_aff.cpu())
+                vl_pred_aff_values.append(pred_aff.detach().cpu())
+                vl_true_aff_values.append(true_aff.cpu())
+                ############ end of the epoch ############
 
-        avg_vl_recon_loss = sum(vl_recon_losses) / vl_dataset_size
-        avg_vl_pocket_loss = sum(vl_pocket_losses) / vl_dataset_size
-        avg_vl_aff_loss = sum(vl_aff_losses) / vl_dataset_size
-        avg_vl_total_loss = sum(vl_total_losses) / vl_dataset_size
-        avg_vl_vDCC = sum(vl_vDCCs) / vl_dataset_size
-        avg_vl_vDCC_SR = (
-            len([DCC for DCC in vl_vDCCs if DCC <= train_cfg["DCC_SR_threshold"]])
+        avg_vl_poc_loss = sum(vl_poc_loss) / vl_dataset_size
+        avg_vl_aff_loss = sum(vl_aff_loss) / vl_dataset_size
+        avg_vl_total_loss = sum(vl_total_loss) / vl_dataset_size
+        avg_vl_DCC = sum(vl_DCCs) / vl_dataset_size
+        avg_vl_DCC_SR = (
+            len([DCC for DCC in vl_DCCs if DCC <= train_cfg["DCC_SR_threshold"]])
             / vl_dataset_size
         )
         avg_vl_DVO = sum(vl_DVOs) / vl_dataset_size
         vl_DCC_nan_count = len(vl_nan_indice)
         nan_count_ls.append(vl_DCC_nan_count)
 
-        epoch_preds = torch.cat(vl_aff_all_preds, dim=0).cpu().numpy().squeeze()
-        epoch_targets = torch.cat(vl_aff_all_targets, dim=0).cpu().numpy().squeeze()
-        vl_PCC = np.corrcoef(epoch_preds, epoch_targets)[0, 1]
+        epoch_pred_aff_values = (
+            torch.cat(vl_pred_aff_values, dim=0).cpu().numpy().squeeze()
+        )
+        epoch_true_aff_values = (
+            torch.cat(vl_true_aff_values, dim=0).cpu().numpy().squeeze()
+        )
+        vl_PCC = np.corrcoef(epoch_pred_aff_values, epoch_true_aff_values)[0, 1]
 
         # Print epoch results
         print(
             f"Epoch [{epoch+1}/{train_cfg['epochs']}]  "
-            f"Train Loss (recon/pocket/b_aff): {avg_tr_total_loss:.4f} ({avg_tr_recon_loss:.4f}/{avg_tr_pocket_loss:.4f}/{avg_tr_aff_loss:.4f})  "
-            f"Valid Loss (recon/pocket/b_aff): {avg_vl_total_loss:.4f} ({avg_vl_recon_loss:.4f}/{avg_vl_pocket_loss:.4f}/{avg_vl_aff_loss:.4f})  "
-            f"Valid vDCC_{train_cfg['DCC_threshold']}: {avg_vl_vDCC:.4f}  "
-            f"Valid vDCC_{train_cfg['DCC_threshold']}_SR_{train_cfg['DCC_SR_threshold']}: {avg_vl_vDCC_SR:.4f}  "
+            f"Train Loss (pocket/affinity): {avg_tr_total_loss:.4f} ({avg_tr_poc_loss:.4f}/{avg_tr_aff_loss:.4f})  "
+            f"Valid Loss (pocket/affinity): {avg_vl_total_loss:.4f} ({avg_vl_poc_loss:.4f}/{avg_vl_aff_loss:.4f})  "
+            f"Valid DCC_{train_cfg['DCC_threshold']}: {avg_vl_DCC:.4f}  "
+            f"Valid DCC_{train_cfg['DCC_threshold']}_SR_{train_cfg['DCC_SR_threshold']}: {avg_vl_DCC_SR:.4f}  "
             f"Valid DVO_{train_cfg['DVO_threshold']}: {avg_vl_DVO:.4f}  "
-            f"Valid DCC_nan_count: {vl_DCC_nan_count:.4f}  "
+            f"Valid DCC_nan_count: {vl_DCC_nan_count}  "
             f"Valid PCC: {vl_PCC:.4f}  "
             f"LR: {optimizer.param_groups[0]['lr']:.6f}"
         )
@@ -601,15 +581,13 @@ def train_model(
             {
                 "epoch": epoch + 1,
                 "loss/train/total": avg_tr_total_loss,
-                "loss/train/reconstruction": avg_tr_recon_loss,
-                "loss/train/pocket": avg_tr_pocket_loss,
+                "loss/train/pocket": avg_tr_poc_loss,
                 "loss/train/affinity": avg_tr_aff_loss,
                 "loss/valid/total": avg_vl_total_loss,
-                "loss/valid/reconstruction": avg_vl_recon_loss,
-                "loss/valid/pocket": avg_vl_pocket_loss,
+                "loss/valid/pocket": avg_vl_poc_loss,
                 "loss/valid/affinity": avg_vl_aff_loss,
-                f"metrics/valid/vDCC_theta{train_cfg['DCC_threshold']}": avg_vl_vDCC,
-                f"metrics/valid/vDCC_theta{train_cfg['DCC_threshold']}_SR_{train_cfg['DCC_SR_threshold']}": avg_vl_vDCC_SR,
+                f"metrics/valid/DCC_theta{train_cfg['DCC_threshold']}": avg_vl_DCC,
+                f"metrics/valid/DCC_theta{train_cfg['DCC_threshold']}_SR_{train_cfg['DCC_SR_threshold']}": avg_vl_DCC_SR,
                 f"metrics/valid/DVO_theta{train_cfg['DVO_threshold']}": avg_vl_DVO,
                 "metrics/valid/DCC_nan_count": vl_DCC_nan_count,
                 "metrics/valid/PCC": vl_PCC,
@@ -617,65 +595,45 @@ def train_model(
             }
         )
 
-        # scheduler.step(avg_vl_total_loss)
         scheduler.step()
 
         # Save best model
-        if avg_vl_total_loss < best_vl_loss:
+        if avg_vl_total_loss + train_cfg["min_delta"] < best_vl_loss:
             best_vl_loss = avg_vl_total_loss
+
             best_model = model.state_dict().copy()
-            # best metric 기록
             best_epoch = epoch + 1
-            best_vl_loss = avg_vl_total_loss
-            best_vl_recon_loss = avg_vl_recon_loss
-            best_vl_pocket_loss = avg_vl_pocket_loss
+            best_vl_poc_loss = avg_vl_poc_loss
             best_vl_aff_loss = avg_vl_aff_loss
-            best_vl_vDCC = avg_vl_vDCC
-            best_vl_vDCC_SR = avg_vl_vDCC_SR
+            best_vl_DCC = avg_vl_DCC
+            best_vl_DCC_SR = avg_vl_DCC_SR
             best_vl_DVO = avg_vl_DVO
             best_DCC_nan_count = vl_DCC_nan_count
             best_vl_PCC = vl_PCC
             print("Best model has saved!")
 
-            # 최상의 모델을 W&B에 저장
-            # model_artifact = wandb.Artifact(
-            #     name=f"best_model_run_{wandb.run.id}",
-            #     type="model",
-            #     description=f"Best model from epoch {best_epoch}",
-            # )
-            os.makedirs(train_cfg["save_dir"], exist_ok=True)
             torch.save(
                 best_model,
                 os.path.join(train_cfg["save_dir"], f"{exp_name}.pt"),
             )
-            # model_artifact.add_file(
-            #     os.path.join(train_cfg["output_dir"], f"{experiment_name}.pt")
-            # )
-            # wandb.log_artifact(model_artifact)
 
-        # Early stopping check
-        end_epoch = train_cfg["epochs"]
-        improved = early_stopping(avg_vl_total_loss, epoch + 1)
+        # Early stop
+        early_stopping(avg_vl_total_loss, epoch + 1)
         if early_stopping.early_stop:
-            end_epoch = epoch + 1
             print(f"Early stopping triggered at epoch {epoch + 1}")
             print(f"Best model was at epoch {early_stopping.best_epoch}")
             break
 
-    # Load best model
-    model.load_state_dict(best_model)
-
-    # writer 닫기
+    # Close wandb writer
     if wandb.run is not None:
         wandb.run.summary.update(
             {
                 "best_epoch": best_epoch,
                 "best_total_loss": best_vl_loss,
-                "best_recon_loss": best_vl_recon_loss,
-                "best_pocket_loss": best_vl_pocket_loss,
+                "best_pocket_loss": best_vl_poc_loss,
                 "best_aff_loss": best_vl_aff_loss,
-                "best_vDCC": best_vl_vDCC,
-                "best_vDCC_SR": best_vl_vDCC_SR,
+                "best_DCC": best_vl_DCC,
+                "best_DCC_SR": best_vl_DCC_SR,
                 "best_DVO": best_vl_DVO,
                 "best_DCC_nan_count": best_DCC_nan_count,
                 "best_PCC": best_vl_PCC,
@@ -689,27 +647,59 @@ def train_model(
 
     num_metrics = [
         best_vl_loss,
-        best_vl_recon_loss,  # 숫자로 구성된 metrics들
-        best_vl_pocket_loss,
+        best_vl_poc_loss,
         best_vl_aff_loss,
-        best_vl_vDCC,
-        best_vl_vDCC_SR,
+        best_vl_DCC,
+        best_vl_DCC_SR,
         best_vl_DVO,
         best_DCC_nan_count,
         best_vl_PCC,
         avg_nan_count,
     ]
 
-    return_metrics = [f"{best_epoch}/{end_epoch}"] + [
+    return_metrics = [f"{best_epoch}/{epoch + 1}"] + [
         round(num, 4) for num in num_metrics
     ]
 
-    return model, return_metrics
+    return best_model, return_metrics
 
 
-def save_results(model: nn.Module, metrics: dict, exp_name: str, save_dir: str):
-    # 여기서 성능 요약 출력하고, 저장하고, 어디에 저장했는지까지 로깅
-    pass
+def save_results(
+    train_cfg, data_cfg, model: nn.Module, metrics: list, exp_name: str, save_dir: str
+):
+    summary = {
+        "train_config": train_cfg,
+        "data_config": data_cfg,
+        "metrics": {
+            "epochs": metrics[0],
+            "best_vl_total_loss": metrics[1],
+            "best_vl_pocket_loss": metrics[2],
+            "best_vl_aff_loss": metrics[3],
+            "best_vl_DCC": metrics[4],
+            "best_vl_DCC_SR": metrics[5],
+            "best_vl_DVO": metrics[6],
+            "best_DCC_nan_count": metrics[7],
+            "best_vl_PCC": metrics[8],
+            "avg_nan_count": metrics[9],
+        },
+    }
+
+    # Save as .json file
+    with open(
+        os.path.join(train_cfg["save_dir"], f"{exp_name}_results.json"), "w"
+    ) as fp:
+        json.dump(summary, fp, indent=4)
+
+    print(f"\nTraining completed. Results:")
+    print(f"  Best epoch / Total epochs: {metrics[0]}")
+    print(f"  Best validation total loss: {metrics[1]:.4f}")
+    print(f"  Best validation PCC: {metrics[8]:.4f}")
+    print(f"  Best validation vDCC SR: {metrics[5]:.4f}\n")
+
+    print(
+        f"Best model and training results have been saved to: {train_cfg['save_dir']}"
+    )
+    return exp_name
 
 
 def main():
@@ -718,9 +708,11 @@ def main():
     if train_cfg["seed"] != -1:
         fix_seed(train_cfg["seed"])
 
-    mdl = MasterDataLoader(data_cfg, train_cfg["seed"], train_cfg["batch_size"], train_cfg["num_workers"])
+    mdl = MasterDataLoader(
+        data_cfg, train_cfg["seed"], train_cfg["batch_size"], train_cfg["num_workers"]
+    )
     tr_loader, vl_loader = mdl.get_tr_vl_loader()
-    
+
     model = InSiteDTA(
         spatial_dims=3,
         in_channels=train_cfg["in_channels"],
@@ -760,7 +752,7 @@ def main():
         f"{timestamp}_{os.path.basename(train_cfg['data_config']).replace('.json', '')}"
     )
 
-    model, metrics = train_model(
+    best_model, metrics = train_model(
         model,
         tr_loader,
         vl_loader,
@@ -769,7 +761,16 @@ def main():
         exp_name=exp_name,
     )
 
-    save_results(model, metrics, exp_name=exp_name, save_dir=train_cfg["save_dir"])
+    model.load_state_dict(best_model)
+
+    save_results(
+        train_cfg,
+        data_cfg,
+        model,
+        metrics,
+        exp_name=exp_name,
+        save_dir=train_cfg["save_dir"],
+    )
 
     return exp_name
 
