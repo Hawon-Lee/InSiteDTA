@@ -39,7 +39,7 @@ from src.scripts.utils_train import (
 def get_arguments():
     parser = argparse.ArgumentParser()
 
-    parser.add_argument("--gpu", type=int, default=0, help="GPU device ID to use")
+    parser.add_argument("--device", type=int, default=0, help="GPU device ID to use")
     parser.add_argument(
         "--wandb_config",
         type=str,
@@ -336,7 +336,7 @@ def train_model(
         aug_generator.manual_seed(train_cfg["seed"])
 
     device = torch.device(
-        f"cuda:{train_cfg['gpu']}" if torch.cuda.is_available() else "cpu"
+        f"cuda:{train_cfg['device']}" if torch.cuda.is_available() else "cpu"
     )
 
     model = model.to(device)
@@ -508,10 +508,10 @@ def train_model(
                     pred_poc, pred_aff = model(voxel, lig_data)
 
                     batch_size = voxel.size(0)
-                    poc_loss = poc_criterion_bce(
-                        pred_poc, pocket
-                    ) + poc_criterion_softdice(pred_poc, pocket)
-                    poc_loss = poc_loss * batch_size
+                    
+                    poc_bce_loss = poc_criterion_bce(pred_poc, pocket) * batch_size
+                    poc_softdice_loss = poc_criterion_softdice(pred_poc, pocket) * batch_size
+                    poc_loss = poc_bce_loss + poc_softdice_loss
 
                     has_aff_labels = ~torch.isnan(true_aff).all()
                     aff_loss = (
@@ -520,9 +520,9 @@ def train_model(
                         else torch.tensor(0.0, device=voxel.device)
                     )
 
-                    total_loss = aff_weight * aff_loss + poc_weight * poc_loss
+                    total_loss = poc_weight * poc_loss + aff_weight * aff_loss
 
-                # Cal validation metrics
+                # Calc validation metrics
                 DCC, nan_index = calc_DCC_with_logit(
                     pred_poc,
                     pocket,

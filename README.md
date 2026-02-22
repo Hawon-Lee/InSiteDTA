@@ -96,13 +96,13 @@ Trained model will be saved as `./checkpoints/{timestamp}.pt`.
 Run evaluation on three benchmark datasets:
 ```bash
 # Evaluate on Coreset_crystal
-python 04-reproduce.py --data crystal --batch_size 64 --device 0
+python 05-reproduce.py --data crystal --batch_size 64 --device 0
 
 # Evaluate on Coreset_redocked  
-python 04-reproduce.py --data redocked --batch_size 64 --device 0
+python 05-reproduce.py --data redocked --batch_size 64 --device 0
 
 # Evaluate on Coreset_p2rank
-python 04-reproduce.py --data p2rank --batch_size 64 --device 0
+python 05-reproduce.py --data p2rank --batch_size 64 --device 0
 ```
 
 The script will:
@@ -120,7 +120,7 @@ The script will:
 - Model checkpoint: `{save_dir}/{timestamp}.pt`
 - Training results: `{save_dir}/{timestamp}_results.json`
 
-**Reproduce (04-reproduce.py):**
+**Reproduce (05-reproduce.py):**
 - Performance metrics (mean ± std across 3 models): PCC, RMSE, MAE
 
 ## Data
