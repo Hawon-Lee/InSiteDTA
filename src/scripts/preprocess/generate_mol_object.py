@@ -67,7 +67,6 @@ def generate_conformers(mol, target_numConfs=1, total_max_attempts=10, seed=42):
         mol = Chem.RemoveHs(mol)
         mol = Chem.AddHs(mol)
 
-        # 여러 번 시도해서 원하는 개수 채우기
         curr_numConfs = 0
         attempts = 0
         while curr_numConfs < target_numConfs and attempts < total_max_attempts:
@@ -83,7 +82,7 @@ def generate_conformers(mol, target_numConfs=1, total_max_attempts=10, seed=42):
             attempts += 1
 
         if curr_numConfs < target_numConfs:
-            print(f"Conformation 생성에 실패")
+            print(f"Failed to generate conformations")
             return []
         
     except:
@@ -142,12 +141,6 @@ def main(csv_path, smi_dir, out_dir, target_numConfs):
         out_path = os.path.join(out_dir, smiles_id + ".pkl")
         if os.path.exists(out_path):
             continue
-            # with open(out_path, 'rb') as fp:
-            #     try:
-            #         mol = pickle.load(fp)
-            #         continue
-            #     except:
-            #         pass
                 
         mol = generate_mol_object(smiles)    
         mol_confs = generate_conformers(mol, target_numConfs=target_numConfs)

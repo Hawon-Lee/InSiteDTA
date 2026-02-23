@@ -98,11 +98,8 @@ def get_arguments():
     return args
 
 
-
-
-
 def collect_pdb_ids(
-    data_structure: Literal["nested", "flatten"], raw_dir: str
+    raw_dir: str, data_structure: Literal["nested", "flatten"]
 ) -> list[str]:
     if not os.path.exists(raw_dir):
         raise FileNotFoundError(f"Raw directory not found: {raw_dir}")
@@ -277,7 +274,7 @@ def main():
     args = get_arguments()
     print_args(args)
 
-    pdb_id_ls = collect_pdb_ids(args.data_structure, args.raw_dir)
+    pdb_id_ls = collect_pdb_ids(args.raw_dir, args.data_structure)
     save_dir_lig = args.save_dir + "/input_ligand"
     save_dir_ptn = args.save_dir + "/input_protein"
 
