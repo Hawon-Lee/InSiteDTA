@@ -39,11 +39,7 @@ from src.scripts.utils_train import (
 def get_arguments():
     parser = argparse.ArgumentParser()
 
-<<<<<<< HEAD
-    parser.add_argument("--gpu", type=int, default=0, help="GPU device ID to use")
-=======
     parser.add_argument("--device", type=int, default=0, help="GPU device ID to use")
->>>>>>> dev
     parser.add_argument(
         "--wandb_config",
         type=str,
@@ -340,11 +336,7 @@ def train_model(
         aug_generator.manual_seed(train_cfg["seed"])
 
     device = torch.device(
-<<<<<<< HEAD
-        f"cuda:{train_cfg['gpu']}" if torch.cuda.is_available() else "cpu"
-=======
         f"cuda:{train_cfg['device']}" if torch.cuda.is_available() else "cpu"
->>>>>>> dev
     )
 
     model = model.to(device)
@@ -492,11 +484,7 @@ def train_model(
         vl_total_loss = []
         vl_DCCs = []
         vl_DVOs = []
-<<<<<<< HEAD
-        vl_nan_indice = []
-=======
         vl_nan_indices = []
->>>>>>> dev
         vl_pred_aff_values = []
         vl_true_aff_values = []
 
@@ -520,17 +508,10 @@ def train_model(
                     pred_poc, pred_aff = model(voxel, lig_data)
 
                     batch_size = voxel.size(0)
-<<<<<<< HEAD
-                    poc_loss = poc_criterion_bce(
-                        pred_poc, pocket
-                    ) + poc_criterion_softdice(pred_poc, pocket)
-                    poc_loss = poc_loss * batch_size
-=======
                     
                     poc_bce_loss = poc_criterion_bce(pred_poc, pocket) * batch_size
                     poc_softdice_loss = poc_criterion_softdice(pred_poc, pocket) * batch_size
                     poc_loss = poc_bce_loss + poc_softdice_loss
->>>>>>> dev
 
                     has_aff_labels = ~torch.isnan(true_aff).all()
                     aff_loss = (
@@ -539,15 +520,9 @@ def train_model(
                         else torch.tensor(0.0, device=voxel.device)
                     )
 
-<<<<<<< HEAD
-                    total_loss = aff_weight * aff_loss + poc_weight * poc_loss
-
-                # Cal validation metrics
-=======
                     total_loss = poc_weight * poc_loss + aff_weight * aff_loss
 
                 # Calc validation metrics
->>>>>>> dev
                 DCC, nan_index = calc_DCC_with_logit(
                     pred_poc,
                     pocket,
@@ -564,11 +539,7 @@ def train_model(
                 vl_total_loss.append(total_loss.item())
                 vl_DCCs += DCC.tolist()
                 vl_DVOs += DVO.tolist()
-<<<<<<< HEAD
-                vl_nan_indice += nan_index
-=======
                 vl_nan_indices += nan_index
->>>>>>> dev
                 vl_pred_aff_values.append(pred_aff.detach().cpu())
                 vl_true_aff_values.append(true_aff.cpu())
                 ############ end of the epoch ############
@@ -582,11 +553,7 @@ def train_model(
             / vl_dataset_size
         )
         avg_vl_DVO = sum(vl_DVOs) / vl_dataset_size
-<<<<<<< HEAD
-        vl_DCC_nan_count = len(vl_nan_indice)
-=======
         vl_DCC_nan_count = len(vl_nan_indices)
->>>>>>> dev
         nan_count_ls.append(vl_DCC_nan_count)
 
         epoch_pred_aff_values = (
@@ -727,17 +694,10 @@ def save_results(
     print(f"  Best epoch / Total epochs: {metrics[0]}")
     print(f"  Best validation total loss: {metrics[1]:.4f}")
     print(f"  Best validation PCC: {metrics[8]:.4f}")
-<<<<<<< HEAD
-    print(f"  Best validation vDCC SR: {metrics[5]:.4f}\n")
-
-    print(
-        f"Best model and training results have been saved to: {train_cfg['save_dir']}"
-=======
     print(f"  Best validation DCC SR: {metrics[5]:.4f}\n")
 
     print(
         f"Best model and result file have been saved to: {train_cfg['save_dir']}"
->>>>>>> dev
     )
     return exp_name
 
