@@ -210,7 +210,7 @@ class ProteinVoxelizer:
         label = torch.zeros((self.n_voxels, self.n_voxels, self.n_voxels, 1), device=device)
         if len(pocket_coords_raw) > 0:
             if label_radius > 0:
-                # [Logic] Radius-based labeling (Original)
+                # Radius-based labeling (Original)
                 flat_label = torch.zeros((self.n_voxels**3, 1), device=device)
                 pkt_coords_tensor = torch.tensor(pocket_coords_raw, device=device, dtype=torch.float32)
                 for i in range(0, pkt_coords_tensor.shape[0], batch_size):
@@ -221,7 +221,7 @@ class ProteinVoxelizer:
                 label = flat_label.view(self.n_voxels, self.n_voxels, self.n_voxels, 1)
 
             else:
-                # [Logic] Exact voxel matching instead of radius-based (label_radius == 0)
+                # Exact voxel matching instead of radius-based (label_radius == 0)
                 indices = np.floor((pocket_coords_raw - start_point) / self.voxel_size).astype(int)
                 
                 # Filter out-of-bounds

@@ -484,7 +484,7 @@ def train_model(
         vl_total_loss = []
         vl_DCCs = []
         vl_DVOs = []
-        vl_nan_indice = []
+        vl_nan_indices = []
         vl_pred_aff_values = []
         vl_true_aff_values = []
 
@@ -539,7 +539,7 @@ def train_model(
                 vl_total_loss.append(total_loss.item())
                 vl_DCCs += DCC.tolist()
                 vl_DVOs += DVO.tolist()
-                vl_nan_indice += nan_index
+                vl_nan_indices += nan_index
                 vl_pred_aff_values.append(pred_aff.detach().cpu())
                 vl_true_aff_values.append(true_aff.cpu())
                 ############ end of the epoch ############
@@ -553,7 +553,7 @@ def train_model(
             / vl_dataset_size
         )
         avg_vl_DVO = sum(vl_DVOs) / vl_dataset_size
-        vl_DCC_nan_count = len(vl_nan_indice)
+        vl_DCC_nan_count = len(vl_nan_indices)
         nan_count_ls.append(vl_DCC_nan_count)
 
         epoch_pred_aff_values = (
@@ -694,10 +694,10 @@ def save_results(
     print(f"  Best epoch / Total epochs: {metrics[0]}")
     print(f"  Best validation total loss: {metrics[1]:.4f}")
     print(f"  Best validation PCC: {metrics[8]:.4f}")
-    print(f"  Best validation vDCC SR: {metrics[5]:.4f}\n")
+    print(f"  Best validation DCC SR: {metrics[5]:.4f}\n")
 
     print(
-        f"Best model and training results have been saved to: {train_cfg['save_dir']}"
+        f"Best model and result file have been saved to: {train_cfg['save_dir']}"
     )
     return exp_name
 
