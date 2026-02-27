@@ -34,3 +34,5 @@ model_input*
 preprocessed_input
 test_scripts.sh
 wandb
+no_commit
+pdbbind_2016

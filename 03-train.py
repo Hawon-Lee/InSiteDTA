@@ -169,7 +169,7 @@ def get_arguments():
 
     # =============== Training Args ===============
     parser.add_argument(
-        "--epochs", type=int, default=300, help="Number of training epochs"
+        "--epochs", type=int, default=250, help="Number of training epochs"
     )
     parser.add_argument(
         "--tr_subset_ratio",
@@ -270,7 +270,7 @@ def get_arguments():
 
     # earlystop
     parser.add_argument(
-        "--patience", type=int, default=15, help="Early stopping patience"
+        "--patience", type=int, default=20, help="Early stopping patience"
     )
     parser.add_argument(
         "--min_delta",
@@ -709,7 +709,7 @@ def main():
         fix_seed(train_cfg["seed"])
 
     mdl = MasterDataLoader(
-        data_cfg, train_cfg["seed"], train_cfg["batch_size"], train_cfg["num_workers"]
+        data_cfg, data_cfg["seed"], train_cfg["batch_size"], train_cfg["num_workers"]
     )
     tr_loader, vl_loader = mdl.get_tr_vl_loader()
 
