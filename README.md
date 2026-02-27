@@ -104,12 +104,28 @@ This generates preprocessed data and `data_config_*.json` in `./preprocessed/`.
 python 03-train.py \
     --data_config ./preprocessed/data_config_*.json \
     --save_dir ./checkpoints \
-    --gpu 0 \
+    --device 0 \
     --epochs 300 \
     --batch_size 48
 ```
 
-Trained model will be saved as `./checkpoints/{timestamp}.pt`.
+Trained model will be saved as `./checkpoints/{timestamp}_{data_config_name}.pt`.
+
+## Evaluate Your Trained Model
+
+```bash
+python 04-evaluate.py \
+    --ckpt ./checkpoints/{experiment_name}.pt \
+    --result_file ./checkpoints/{experiment_name}_results.json \
+    --save_dir ./evaluation \
+    --device 0
+```
+
+The script will:
+1. Load the test split defined in the training result file
+2. Run inference on the test set
+3. Report performance metrics (PCC, RMSE, MAE, DCC, DVO)
+4. Save detailed results to `{save_dir}/{experiment_name}_test_results.csv`
 
 ## Reproduce Paper Results
 
@@ -137,8 +153,11 @@ The script will:
 - Predicted binding affinity in pK scale (higher values = stronger binding)
 
 **Training (03-train.py):**
-- Model checkpoint: `{save_dir}/{timestamp}.pt`
-- Training results: `{save_dir}/{timestamp}_results.json`
+- Model checkpoint: `{save_dir}/{timestamp}_{data_config_name}.pt`
+- Training results: `{save_dir}/{timestamp}_{data_config_name}_results.json`
+
+**Evaluate (04-evaluate.py):**
+- Evaluation results CSV: `{save_dir}/{experiment_name}_test_results.csv`
 
 **Reproduce (05-reproduce.py):**
 - Performance metrics (mean ± std across 3 models): PCC, RMSE, MAE
