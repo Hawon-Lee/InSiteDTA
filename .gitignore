@@ -36,3 +36,4 @@ test_scripts.sh
 wandb
 no_commit
 pdbbind_2016
+src/p2rank

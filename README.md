@@ -5,7 +5,7 @@ A complex-free deep learning model for protein-ligand binding affinity predictio
 
 **Key Features:**
 - No molecular docking required
-- No explicit binding site annotation needed
+- Robust performance regardless of binding site determination method
 - Robust performance on imperfect structural inputs
 
 ## Installation
@@ -22,18 +22,38 @@ conda env create -f environment.yml
 conda activate insite
 ```
 
+### 3. Install P2Rank (Optional, Recommended)
+```bash
+mkdir src/p2rank && cd src/p2rank
+wget https://github.com/rdk/p2rank/releases/download/2.5.1/p2rank_2.5.1.tar.gz
+tar -xzf p2rank_2.5.1.tar.gz -C ./ --strip-components=1
+```
+
+> **Why P2Rank?**
+> InSiteDTA internally predicts the binding site and uses it as a feature for affinity prediction, so P2Rank is not strictly required. However, providing a P2Rank-predicted pocket helps guide the voxelization step so that the sampled protein voxel is more likely to include the true binding site. This can enable more sophisticated prediction, especially when inferencing with large proteins.
+
 **Our tested environment:**
 - Python: 3.9.19
 - PyTorch: 2.5.1
 - PyTorch Geometric: 2.6.1
 - CUDA: 11.8
+- P2Rank: 2.5.1
 
 ## Quick Start Example
 
+**Without pocket guidance (unguided voxelization):**
 ```bash
 python 01-inference.py \
-    --pdb_path ./src/data/sample/1bzc_protein.pdb \
-    --smiles "[O-]C(=O)CC[C@@H](C(=O)N)NC(=O)c1ccc2c(c1)ccc(c2)C(P(=O)([O-])[O-])(F)F"
+    --pdb_path ./src/data/samples/4gkm/4gkm_protein.pdb \
+    --smiles "Cc1ccc(c(c1)C(=O)[O-])Nc1ccccc1C(=O)[O-]"
+```
+
+**With P2Rank guidance (guided voxelization, recommended):**
+```bash
+python 01-inference.py \
+    --pdb_path ./src/data/samples/4gkm/4gkm_protein.pdb \
+    --smiles "Cc1ccc(c(c1)C(=O)[O-])Nc1ccccc1C(=O)[O-]" \
+    --use_p2rank
 ```
 
 ## Training With Your Own Data
