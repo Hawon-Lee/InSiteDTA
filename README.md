@@ -22,7 +22,7 @@ conda env create -f environment.yml
 conda activate insite
 ```
 
-### 3. Install P2Rank (Optional, Recommended)
+### 3. Install P2Rank (Optional, Recommended) — [Krivák & Hoksza, 2018](https://doi.org/10.1186/s13321-018-0285-8)
 ```bash
 mkdir src/p2rank && cd src/p2rank
 wget https://github.com/rdk/p2rank/releases/download/2.5.1/p2rank_2.5.1.tar.gz
