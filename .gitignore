@@ -30,10 +30,9 @@ Thumbs.db
 logs/
 
 # Custom
-model_input*
-preprocessed_input
+model_input*/
+preprocessed_input/
 test_scripts.sh
-wandb
-no_commit
-pdbbind_2016
-src/p2rank
+wandb/
+pdbbind_2016/
+src/p2rank/
