@@ -62,12 +62,11 @@ class ProteinVoxelizer:
         # [Safety] Handle None or empty path
         if not pdb_file:
             return []
-
+        
         obConversion = openbabel.OBConversion()
         obConversion.SetInFormat("pdb")
         mol = openbabel.OBMol()
-
-        # [Fix] Convert Path object to string for OpenBabel C++ bindings
+        
         if not obConversion.ReadFile(mol, str(pdb_file)):
             # print(f"Error: Could not read PDB file: {pdb_file}")
             return []
