@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+ENV/
+*.egg-info/
+dist/
+build/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Custom
+.claude
+src/exp_*
+src/p2rank
+src/data/coreset_boltz2
+src/data/coreset_labind
+src/ckpt/*PDBbind*
+model_input
+model_input_esm64_rad0_geom
+model_input_esm960_rad0_geom
+preprocessed_input
+pdbbind_2016
+1d_distill_tau5
+test_scripts.sh
