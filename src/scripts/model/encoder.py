@@ -174,7 +174,6 @@ class PatchMerging(nn.Module):
                 [x[:, j::2, i::2, :] for i, j in itertools.product(range(2), range(2))],
                 -1,
             )
-
         x = self.norm(x)
         x = self.reduction(x)
         return x

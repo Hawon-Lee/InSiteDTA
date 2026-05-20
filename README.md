@@ -22,38 +22,18 @@ conda env create -f environment.yml
 conda activate insite
 ```
 
-### 3. Install P2Rank (Optional, Recommended) — [Krivák & Hoksza, 2018](https://doi.org/10.1186/s13321-018-0285-8)
-```bash
-mkdir src/p2rank && cd src/p2rank
-wget https://github.com/rdk/p2rank/releases/download/2.5.1/p2rank_2.5.1.tar.gz
-tar -xzf p2rank_2.5.1.tar.gz -C ./ --strip-components=1
-```
-
-> **Why P2Rank?**
-> InSiteDTA internally predicts the binding site and uses it as a feature for affinity prediction, so P2Rank is not strictly required. However, providing a P2Rank-predicted pocket helps guide the voxelization step so that the sampled protein voxel is more likely to include the true binding site. This can enable more sophisticated prediction, especially when inferencing with large proteins.
-
 **Our tested environment:**
 - Python: 3.9.19
 - PyTorch: 2.5.1
 - PyTorch Geometric: 2.6.1
 - CUDA: 11.8
-- P2Rank: 2.5.1
 
 ## Quick Start Example
 
-**Without pocket guidance (unguided voxelization):**
 ```bash
 python 01-inference.py \
     --pdb_path ./src/data/samples/4gkm/4gkm_protein.pdb \
     --smiles "Cc1ccc(c(c1)C(=O)[O-])Nc1ccccc1C(=O)[O-]"
-```
-
-**With P2Rank guidance (guided voxelization, recommended):**
-```bash
-python 01-inference.py \
-    --pdb_path ./src/data/samples/4gkm/4gkm_protein.pdb \
-    --smiles "Cc1ccc(c(c1)C(=O)[O-])Nc1ccccc1C(=O)[O-]" \
-    --use_p2rank
 ```
 
 ## Training With Your Own Data
@@ -98,47 +78,6 @@ python 02-preprocess.py \
 
 This generates preprocessed data and `data_config_*.json` in `./preprocessed/`.
 
-//TODO: Integrated venvs
-#### Optional: ESM-C Protein Embeddings
-
-You can enrich protein voxels with per-residue ESM-C embeddings (960-dim, mapped to CA coordinates via Gaussian density).
-
-**Step 2a: Extract ESM-C embeddings** (requires `esm` environment)
-```bash
-# Create environment
-conda create -n esm python=3.10 -y
-conda run -n esm pip install esm biopython httpx
-conda run -n esm pip install torch==2.5.1+cu118 --index-url https://download.pytorch.org/whl/cu118
-
-# Extract embeddings and fit PCA
-conda run -n esm python src/scripts/preprocess/esm_embedding.py \
-    --pdb_dir ./raw_data \
-    --save_dir ./preprocessed/esm_embeddings \
-    --device 0 \
-    --fit_pca --pca_dim 64
-```
-
-This saves full 960-dim embeddings (`{pdb_id}_esm.pkl`) and a PCA model (`pca_64.pkl`).
-Multi-chain proteins are handled by processing each chain separately; homo-oligomers are optimized to run ESM inference only once per unique sequence.
-
-**Step 2b: Voxelize with ESM features** (requires `insite` environment)
-```bash
-python 02-preprocess.py \
-    --raw_dir ./raw_data \
-    --save_dir ./preprocessed \
-    --smiles_csv ./smiles.csv \
-    --index_file ./affinity.json \
-    --test_key_file ./test_keys.txt \
-    --voxel_size 2 \
-    --n_voxels 32 \
-    --device 0 \
-    --esm_dir ./preprocessed/esm_embeddings \
-    --pca_path ./preprocessed/esm_embeddings/pca_64.pkl
-```
-
-This produces voxels with 21 (hand-crafted) + 64 (ESM PCA) + 1 (pocket label) = 86 channels.
-Set `in_channels=85` when creating the model. If `--pca_path` is omitted, full 960-dim ESM features are used.
-
 ### Step 3: Train
 
 ```bash
@@ -182,16 +121,9 @@ python 05-reproduce.py --ckpt ckpt_CleanSplit_s309_teacher.pt --scenario redocke
 python 05-reproduce.py --ckpt ckpt_CleanSplit_s309_teacher.pt --scenario p2rank --device 0
 ```
 
-To evaluate with ESM-enriched voxels, add `--esm_dir` and `--pca_path`:
-```bash
-python 05-reproduce.py --scenario crystal --batch_size 64 --device 0 \
-    --esm_dir ./preprocessed/esm_embeddings \
-    --pca_path ./preprocessed/esm_embeddings/pca_64.pkl
-```
-
 The script will:
 1. Prepare ligand features from SMILES
-2. Voxelize protein structures (with optional ESM features)
+2. Voxelize protein structures
 3. Evaluate with three trained models
 4. Report performance metrics (PCC, RMSE, MAE)
 

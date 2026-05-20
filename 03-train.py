@@ -1,10 +1,14 @@
-# TODO: 저장을 ckpt 폴더에 맞게 해서 inference 폴더 또는 reproduce 폴더와 일치하게.
 """
 data directory, hyperparams -> training cfg file
-training cfg file -> training/validation -> ckpt saving
-evaluation by inference code? options 조절이 안되는데 out channels 만 조절하면 되려나
+training cfg file -> training/validation -> ckpt saving (student + EMA teacher)
+
+Self-distillation: an EMA teacher (dropout off) generates soft pocket labels that
+the student (dropout on) is distilled toward. The teacher (*_teacher.pt) is the
+production checkpoint consumed by 01-inference.py / 04-evaluate.py / 05-reproduce.py.
 """
 import argparse
+import copy
+import math
 import os
 import wandb
 import json
@@ -268,6 +272,32 @@ def get_arguments():
         help="Std value for label noise injection",
     )
 
+    # distillation
+    parser.add_argument(
+        "--ema_momentum_start",
+        type=float,
+        default=0.996,
+        help="EMA momentum at the start of training (cosine schedule)",
+    )
+    parser.add_argument(
+        "--ema_momentum_end",
+        type=float,
+        default=1.0,
+        help="EMA momentum at the end of training (cosine schedule)",
+    )
+    parser.add_argument(
+        "--distill_weight",
+        type=float,
+        default=1.0,
+        help="Weight for distillation loss (α)",
+    )
+    parser.add_argument(
+        "--distill_tau",
+        type=float,
+        default=5.0,
+        help="Temperature for pocket soft label (τ)",
+    )
+
     # earlystop
     parser.add_argument(
         "--patience", type=int, default=20, help="Early stopping patience"
@@ -313,6 +343,26 @@ def get_configs() -> tuple[dict, dict]:
     return data_cfg, vars(train_cfg)
 
 
+def create_ema_teacher(model):
+    """Create EMA teacher as a deep copy with frozen gradients."""
+    teacher = copy.deepcopy(model)
+    for p in teacher.parameters():
+        p.requires_grad = False
+    return teacher
+
+
+@torch.no_grad()
+def update_ema_teacher(teacher, student, momentum):
+    """Update teacher parameters with EMA."""
+    for t_param, s_param in zip(teacher.parameters(), student.parameters()):
+        t_param.data.mul_(momentum).add_(s_param.data, alpha=1 - momentum)
+
+
+def get_ema_momentum(epoch, total_epochs, m_start, m_end):
+    """Cosine schedule for EMA momentum from m_start to m_end."""
+    return m_end - (m_end - m_start) * (1 + math.cos(math.pi * epoch / total_epochs)) / 2
+
+
 def train_model(
     model: nn.Module,
     tr_loader: torch.utils.data.DataLoader,
@@ -340,6 +390,13 @@ def train_model(
     )
 
     model = model.to(device)
+
+    # EMA teacher (self-distillation)
+    teacher = create_ema_teacher(model)
+    teacher.to(device)
+    teacher.eval()
+    distill_weight = train_cfg["distill_weight"]
+    distill_tau = train_cfg["distill_tau"]
 
     early_stopping = EarlyStopping(
         patience=train_cfg["patience"], min_delta=train_cfg["min_delta"]
@@ -375,8 +432,10 @@ def train_model(
     poc_weight = train_cfg["poc_loss_weight"]
     aff_weight = train_cfg["aff_loss_weight"]
 
+    best_vl_PCC = -float("inf")
     best_vl_loss = float("inf")
     best_model = None
+    best_teacher = None
     nan_count_ls = []
 
     vl_dataset_size = len(vl_loader.dataset)
@@ -393,10 +452,19 @@ def train_model(
         tr_steps_limit = tr_steps
 
     for epoch in range(train_cfg["epochs"]):
+        # EMA momentum for this epoch
+        ema_momentum = get_ema_momentum(
+            epoch,
+            train_cfg["epochs"],
+            train_cfg["ema_momentum_start"],
+            train_cfg["ema_momentum_end"],
+        )
+
         # [TRAINING]
         model.train()
         tr_poc_loss = 0
         tr_aff_loss = 0
+        tr_distill_loss = 0
         tr_total_loss = 0
         accumulation_step = 0
 
@@ -421,14 +489,19 @@ def train_model(
                 true_aff.to(device),
             )
 
-            # On-line data augmentation
+            # On-line data augmentation: rotation (shared between teacher and student)
             if (
                 torch.rand(1, generator=aug_generator).item()
                 < train_cfg["rotation_prob"]
             ):
                 voxel, pocket = rotate_3d_6faces(voxel, pocket)
 
-            # Add gaussian noise to affinity label
+            # Teacher forward (clean input, same rotation, dropout off)
+            with torch.no_grad():
+                with autocast(device_type=device.type):
+                    teacher_poc, _ = teacher(voxel, lig_data)
+
+            # Add gaussian noise to affinity label (student only)
             true_aff = add_gaussian_noise(
                 true_aff, noise_std=train_cfg["label_noise_std"]
             )
@@ -439,7 +512,7 @@ def train_model(
             with autocast(device_type=device.type):
                 pred_poc, pred_aff = model(voxel, lig_data)
 
-                # Calc losses
+                # GT losses
                 has_aff_labels = ~torch.isnan(true_aff).all()
                 aff_loss = (
                     aff_criterion(pred_aff, true_aff)
@@ -449,7 +522,18 @@ def train_model(
                 poc_loss = poc_criterion_bce(pred_poc, pocket) + poc_criterion_softdice(
                     pred_poc, pocket
                 )
-                total_loss = aff_weight * aff_loss + poc_weight * poc_loss
+
+                # Distillation loss: BCE with teacher soft label
+                teacher_soft_label = torch.sigmoid(teacher_poc.detach() / distill_tau)
+                distill_loss = nn.functional.binary_cross_entropy_with_logits(
+                    pred_poc, teacher_soft_label
+                )
+
+                total_loss = (
+                    aff_weight * aff_loss
+                    + poc_weight * poc_loss
+                    + distill_weight * distill_loss
+                )
 
                 # Normalize loss for gradient accumulation
                 total_loss = total_loss / train_cfg["grad_accumulation_steps"]
@@ -464,17 +548,20 @@ def train_model(
             ):
                 scaler.step(optimizer)
                 scaler.update()
+                update_ema_teacher(teacher, model, ema_momentum)
                 accumulation_step = 0  # Reset accumulation counter
 
             # Store loss (multiply total_loss back by accumulation steps for proper logging)
             tr_poc_loss += poc_loss.detach().item()
             tr_aff_loss += aff_loss.detach().item()
+            tr_distill_loss += distill_loss.detach().item()
             tr_total_loss += (
                 total_loss.detach().item() * train_cfg["grad_accumulation_steps"]
             )
 
         avg_tr_poc_loss = tr_poc_loss / tr_steps_limit
         avg_tr_aff_loss = tr_aff_loss / tr_steps_limit
+        avg_tr_distill_loss = tr_distill_loss / tr_steps_limit
         avg_tr_total_loss = tr_total_loss / tr_steps_limit
 
         # [VALIDATION]
@@ -487,6 +574,11 @@ def train_model(
         vl_nan_indices = []
         vl_pred_aff_values = []
         vl_true_aff_values = []
+
+        # Teacher validation metrics
+        teacher_vl_pred_aff_values = []
+        teacher_vl_aff_loss_sum = 0.0
+        teacher_vl_DCCs = []
 
         with torch.no_grad():
             for sample in tqdm(vl_loader):
@@ -504,11 +596,12 @@ def train_model(
                     true_aff.to(device),
                 )
 
+                batch_size = voxel.size(0)
+
                 with autocast(device_type=device.type):
                     pred_poc, pred_aff = model(voxel, lig_data)
+                    teacher_poc, teacher_aff = teacher(voxel, lig_data)
 
-                    batch_size = voxel.size(0)
-                    
                     poc_bce_loss = poc_criterion_bce(pred_poc, pocket) * batch_size
                     poc_softdice_loss = poc_criterion_softdice(pred_poc, pocket) * batch_size
                     poc_loss = poc_bce_loss + poc_softdice_loss
@@ -516,6 +609,11 @@ def train_model(
                     has_aff_labels = ~torch.isnan(true_aff).all()
                     aff_loss = (
                         aff_criterion(pred_aff, true_aff) * batch_size
+                        if has_aff_labels
+                        else torch.tensor(0.0, device=voxel.device)
+                    )
+                    teacher_aff_loss = (
+                        aff_criterion(teacher_aff, true_aff) * batch_size
                         if has_aff_labels
                         else torch.tensor(0.0, device=voxel.device)
                     )
@@ -534,6 +632,14 @@ def train_model(
                     pred_poc, pocket, threshold=train_cfg["DVO_threshold"]
                 )
 
+                # Teacher DCC
+                teacher_DCC, _ = calc_DCC_with_logit(
+                    teacher_poc,
+                    pocket,
+                    voxel_size=voxel_size,
+                    threshold=train_cfg["DCC_threshold"],
+                )
+
                 vl_poc_loss.append(poc_loss.item())
                 vl_aff_loss.append(aff_loss.item())
                 vl_total_loss.append(total_loss.item())
@@ -542,6 +648,10 @@ def train_model(
                 vl_nan_indices += nan_index
                 vl_pred_aff_values.append(pred_aff.detach().cpu())
                 vl_true_aff_values.append(true_aff.cpu())
+
+                teacher_vl_aff_loss_sum += teacher_aff_loss.item()
+                teacher_vl_pred_aff_values.append(teacher_aff.detach().cpu())
+                teacher_vl_DCCs += teacher_DCC.tolist()
                 ############ end of the epoch ############
 
         avg_vl_poc_loss = sum(vl_poc_loss) / vl_dataset_size
@@ -564,6 +674,17 @@ def train_model(
         )
         vl_PCC = np.corrcoef(epoch_pred_aff_values, epoch_true_aff_values)[0, 1]
 
+        # Teacher validation metrics
+        avg_teacher_vl_aff_loss = teacher_vl_aff_loss_sum / vl_dataset_size
+        avg_teacher_vl_DCC_SR = (
+            len([d for d in teacher_vl_DCCs if d <= train_cfg["DCC_SR_threshold"]])
+            / vl_dataset_size
+        )
+        teacher_pred_aff_np = (
+            torch.cat(teacher_vl_pred_aff_values, dim=0).cpu().numpy().squeeze()
+        )
+        teacher_vl_PCC = np.corrcoef(teacher_pred_aff_np, epoch_true_aff_values)[0, 1]
+
         # Print epoch results
         print(
             f"Epoch [{epoch+1}/{train_cfg['epochs']}]  "
@@ -574,6 +695,8 @@ def train_model(
             f"Valid DVO_{train_cfg['DVO_threshold']}: {avg_vl_DVO:.4f}  "
             f"Valid DCC_nan_count: {vl_DCC_nan_count}  "
             f"Valid PCC: {vl_PCC:.4f}  "
+            f"Teacher PCC: {teacher_vl_PCC:.4f}  "
+            f"Teacher DCC_SR: {avg_teacher_vl_DCC_SR:.4f}  "
             f"LR: {optimizer.param_groups[0]['lr']:.6f}"
         )
 
@@ -583,6 +706,9 @@ def train_model(
                 "loss/train/total": avg_tr_total_loss,
                 "loss/train/pocket": avg_tr_poc_loss,
                 "loss/train/affinity": avg_tr_aff_loss,
+                "loss/train/original": aff_weight * avg_tr_aff_loss + poc_weight * avg_tr_poc_loss,
+                "loss/train/distill": avg_tr_distill_loss,
+                "ema_momentum": ema_momentum,
                 "loss/valid/total": avg_vl_total_loss,
                 "loss/valid/pocket": avg_vl_poc_loss,
                 "loss/valid/affinity": avg_vl_aff_loss,
@@ -591,17 +717,22 @@ def train_model(
                 f"metrics/valid/DVO_theta{train_cfg['DVO_threshold']}": avg_vl_DVO,
                 "metrics/valid/DCC_nan_count": vl_DCC_nan_count,
                 "metrics/valid/PCC": vl_PCC,
+                "metrics/valid/teacher_PCC": teacher_vl_PCC,
+                "metrics/valid/teacher_DCC_SR": avg_teacher_vl_DCC_SR,
+                "loss/valid/teacher_affinity": avg_teacher_vl_aff_loss,
                 "learning_rate": optimizer.param_groups[0]["lr"],
             }
         )
 
         scheduler.step()
 
-        # Save best model
-        if avg_vl_total_loss + train_cfg["min_delta"] < best_vl_loss:
+        # Save best model (PCC 기준)
+        if not np.isnan(vl_PCC) and vl_PCC > best_vl_PCC:
+            best_vl_PCC = vl_PCC
             best_vl_loss = avg_vl_total_loss
 
             best_model = model.state_dict().copy()
+            best_teacher = teacher.state_dict().copy()
             best_epoch = epoch + 1
             best_vl_poc_loss = avg_vl_poc_loss
             best_vl_aff_loss = avg_vl_aff_loss
@@ -609,16 +740,23 @@ def train_model(
             best_vl_DCC_SR = avg_vl_DCC_SR
             best_vl_DVO = avg_vl_DVO
             best_DCC_nan_count = vl_DCC_nan_count
-            best_vl_PCC = vl_PCC
+            best_teacher_vl_PCC = teacher_vl_PCC
+            best_teacher_vl_DCC_SR = avg_teacher_vl_DCC_SR
+            best_teacher_vl_aff_loss = avg_teacher_vl_aff_loss
             print("Best model has saved!")
 
             torch.save(
                 best_model,
                 os.path.join(train_cfg["save_dir"], f"{exp_name}.pt"),
             )
+            torch.save(
+                best_teacher,
+                os.path.join(train_cfg["save_dir"], f"{exp_name}_teacher.pt"),
+            )
 
-        # Early stop
-        early_stopping(avg_vl_total_loss, epoch + 1)
+        # Early stop (PCC 기준, NaN 시 loss fallback)
+        _es_metric = -vl_PCC if not np.isnan(vl_PCC) else avg_vl_total_loss
+        early_stopping(_es_metric, epoch + 1)
         if early_stopping.early_stop:
             print(f"Early stopping triggered at epoch {epoch + 1}")
             print(f"Best model was at epoch {early_stopping.best_epoch}")
@@ -637,6 +775,9 @@ def train_model(
                 "best_DVO": best_vl_DVO,
                 "best_DCC_nan_count": best_DCC_nan_count,
                 "best_PCC": best_vl_PCC,
+                "best_teacher_PCC": best_teacher_vl_PCC,
+                "best_teacher_DCC_SR": best_teacher_vl_DCC_SR,
+                "best_teacher_aff_loss": best_teacher_vl_aff_loss,
                 "avg_nan_count": sum(nan_count_ls) / len(nan_count_ls),
             }
         )
@@ -655,6 +796,9 @@ def train_model(
         best_DCC_nan_count,
         best_vl_PCC,
         avg_nan_count,
+        best_teacher_vl_PCC,
+        best_teacher_vl_DCC_SR,
+        best_teacher_vl_aff_loss,
     ]
 
     return_metrics = [f"{best_epoch}/{epoch + 1}"] + [
@@ -670,7 +814,7 @@ def save_results(
     summary = {
         "train_config": train_cfg,
         "data_config": data_cfg,
-        "metrics": {
+        "student_metrics": {
             "epochs": metrics[0],
             "best_vl_total_loss": metrics[1],
             "best_vl_pocket_loss": metrics[2],
@@ -681,6 +825,11 @@ def save_results(
             "best_DCC_nan_count": metrics[7],
             "best_vl_PCC": metrics[8],
             "avg_nan_count": metrics[9],
+        },
+        "teacher_metrics": {
+            "best_vl_PCC": metrics[10],
+            "best_vl_DCC_SR": metrics[11],
+            "best_vl_aff_loss": metrics[12],
         },
     }
 
@@ -748,9 +897,12 @@ def main():
     )
 
     timestamp = datetime.now().strftime("%y%m%d-%H%M%S")
-    exp_name = (
-        f"{timestamp}_{os.path.basename(train_cfg['data_config']).replace('.json', '')}"
+    split_name = (
+        os.path.basename(train_cfg["data_config"])
+        .replace("data_config_", "")
+        .replace(".json", "")
     )
+    exp_name = f"{split_name}_s{train_cfg['seed']}_{timestamp}"
 
     best_model, metrics = train_model(
         model,
