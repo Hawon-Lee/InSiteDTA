@@ -19,7 +19,7 @@ from src.scripts.utils_train import calc_DCC_with_logit, calc_DVO_with_logit
 
 def get_arguments():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--scenario", type=str, choices=["crystal", "redocked", "p2rank", "boltz2", "alphafold", "labind"], required=True, help="Coreset scenario to evaluate")
+    parser.add_argument("--scenario", type=str, choices=["crystal", "redocked", "p2rank", "alphafold"], required=True, help="Coreset scenario to evaluate")
     parser.add_argument("--ckpt", type=str, nargs="+", required=True, help="Path(s) to model checkpoint(s)")
     parser.add_argument("--batch_size", type=int, default=64, help="Bacth size for inference")
     parser.add_argument("--device", type=int, default=0, help="GPU device to use")

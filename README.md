@@ -1,5 +1,5 @@
 # InSiteDTA
-<img width="4200" height="1498" alt="Fig_overview" src="https://github.com/user-attachments/assets/66a2831e-2014-44ad-be55-5fe7f8ed609f" />
+<img width="4200" height="2657" alt="Fig_overview" src="https://github.com/user-attachments/assets/bb298ef5-fc96-4051-a076-a361b26a5c08" />
 
 A complex-free deep learning model for protein-ligand binding affinity prediction with intrinsic binding site detection.
 
@@ -33,8 +33,11 @@ conda activate insite
 ```bash
 python 01-inference.py \
     --pdb_path ./src/data/samples/4gkm/4gkm_protein.pdb \
-    --smiles "Cc1ccc(c(c1)C(=O)[O-])Nc1ccccc1C(=O)[O-]"
+    --smiles "Cc1ccc(c(c1)C(=O)[O-])Nc1ccccc1C(=O)[O-]" \
+    --ckpt ./src/ckpt/CleanSplit_fold0_s312_teacher.pt
 ```
+
+> Optional: `--save_bs_pdb <path>` exports the predicted binding-site residues as a PDB (`--save_voxel_pdb <path>` for the raw voxel grid; `--bs_threshold` tunes the probability cutoff).
 
 ## Training With Your Own Data
 
@@ -60,7 +63,7 @@ For affinity prediction, prepare affinity index JSON (`affinity.json`):
 ```json
 {"1abc": 5.2, "1def": 7.8}
 ```
-> **Note:** If you only want to train binding site prediction, omit `--index_file` argument in preprocessing.
+> **Note:** Affinity labels are loaded from `--index_file` (default: `src/data/index/affinity_index_pdbbind2020.json`). Samples without a matching entry are trained without affinity supervision.
 
 ### Step 2: Preprocess
 
@@ -89,13 +92,17 @@ python 03-train.py \
     --batch_size 48
 ```
 
-Trained model will be saved as `./checkpoints/{timestamp}_{data_config_name}.pt`.
+Training uses **self-distillation** (an EMA teacher) and saves two checkpoints to `--save_dir`:
+- `{split}_s{seed}_{timestamp}.pt` — student
+- `{split}_s{seed}_{timestamp}_teacher.pt` — EMA teacher (**use this for inference / evaluate / reproduce**)
+
+A `{split}_s{seed}_{timestamp}_results.json` with student/teacher metrics is also written.
 
 ## Evaluate Your Trained Model
 
 ```bash
 python 04-evaluate.py \
-    --ckpt ./checkpoints/{experiment_name}.pt \
+    --ckpt ./checkpoints/{experiment_name}_teacher.pt \
     --result_file ./checkpoints/{experiment_name}_results.json \
     --save_dir ./evaluation \
     --device 0
@@ -104,28 +111,31 @@ python 04-evaluate.py \
 The script will:
 1. Load the test split defined in the training result file
 2. Run inference on the test set
-3. Report performance metrics (PCC, RMSE, MAE, DCC, DVO)
+3. Report performance metrics (PCC, RMSE, MAE, DCC, DCC_SR, DVO)
 4. Save detailed results to `{save_dir}/{experiment_name}_test_results.csv`
 
 ## Reproduce Paper Results
 
-Run evaluation on three benchmark datasets:
+Run evaluation across the benchmark scenarios (`--scenario`: `crystal`, `redocked`, `p2rank`, `alphafold`):
 ```bash
 # Evaluate on Coreset_crystal
-python 05-reproduce.py --ckpt ckpt_CleanSplit_s309_teacher.pt --scenario crystal --device 0
+python 05-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario crystal --device 0
 
 # Evaluate on Coreset_redocked  
-python 05-reproduce.py --ckpt ckpt_CleanSplit_s309_teacher.pt --scenario redocked --device 0
+python 05-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario redocked --device 0
 
 # Evaluate on Coreset_p2rank
-python 05-reproduce.py --ckpt ckpt_CleanSplit_s309_teacher.pt --scenario p2rank --device 0
+python 05-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario p2rank --device 0
+
+# Evaluate on Coreset_alphafold
+python 05-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario alphafold --device 0
 ```
 
 The script will:
 1. Prepare ligand features from SMILES
 2. Voxelize protein structures
-3. Evaluate with three trained models
-4. Report performance metrics (PCC, RMSE, MAE)
+3. Evaluate each provided checkpoint (`--ckpt` accepts multiple, e.g. multiple seeds)
+4. Report aggregated metrics — mean ± std (PCC, RMSE, MAE, DCC, DCC_SR, DVO)
 
 ## Output
 
@@ -133,14 +143,15 @@ The script will:
 - Predicted binding affinity in pK scale (higher values = stronger binding)
 
 **Training (03-train.py):**
-- Model checkpoint: `{save_dir}/{timestamp}_{data_config_name}.pt`
-- Training results: `{save_dir}/{timestamp}_{data_config_name}_results.json`
+- Student checkpoint: `{save_dir}/{split}_s{seed}_{timestamp}.pt`
+- EMA teacher checkpoint: `{save_dir}/{split}_s{seed}_{timestamp}_teacher.pt` (used for inference / evaluate / reproduce)
+- Training results: `{save_dir}/{split}_s{seed}_{timestamp}_results.json`
 
 **Evaluate (04-evaluate.py):**
 - Evaluation results CSV: `{save_dir}/{experiment_name}_test_results.csv`
 
 **Reproduce (05-reproduce.py):**
-- Performance metrics (mean ± std across 3 models): PCC, RMSE, MAE
+- Aggregated metrics across the provided checkpoints (mean ± std): PCC, RMSE, MAE, DCC, DCC_SR, DVO
 
 ## Data
 
@@ -151,7 +162,15 @@ The script will:
 - Coreset with redocked ligand in the native pocket
 
 **$Coreset_{p2rank}$**
-- Coreset with redocked ligand in the p2rank predicted pocket
+- Ligand redocked into the pocket predicted by P2Rank
+  ([Krivák & Hoksza, 2018](https://doi.org/10.1186/s13321-018-0285-8))
+
+**$Coreset_{alphafold}$**
+- Protein structures predicted by ColabFold
+  ([Mirdita et al., 2022](https://doi.org/10.1038/s41592-022-01488-1))
+  using AlphaFold-Multimer
+  ([Evans et al., 2022](https://doi.org/10.1101/2021.10.04.463034))
+  (imperfect-structure benchmark)
 
 
 ## Citation

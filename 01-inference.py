@@ -18,7 +18,7 @@ def get_arguments():
     parser = argparse.ArgumentParser()
     parser.add_argument("--pdb_path", type=str, required=True, help="Path to protein PDB file")
     parser.add_argument("--smiles", type=str, required=True, help="SMILES string of the ligand")
-    parser.add_argument("--ckpt", type=str, default="./src/ckpt/run_2.pt", help="Path to model checkpoint file")
+    parser.add_argument("--ckpt", type=str, default="./src/ckpt/CleanSplit_fold0_s312_teacher.pt", help="Path to model checkpoint file")
     parser.add_argument("--use_p2rank", action="store_true", help="Use P2Rank to guide protein voxelization")
     parser.add_argument("--device", type=int, default=0, help="CUDA device index")
     parser.add_argument("--save_bs_pdb", type=str, default=None,
