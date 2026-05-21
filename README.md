@@ -1,28 +1,33 @@
 # InSiteDTA
-<img width="4200" height="2657" alt="Fig_overview" src="https://github.com/user-attachments/assets/bb298ef5-fc96-4051-a076-a361b26a5c08" />
 
-A complex-free deep learning model for protein-ligand binding affinity prediction with intrinsic binding site detection.
+
+
+A complex-free deep learning model for protein-ligand binding affinity prediction with internal binding site detection.
 
 **Key Features:**
-- No molecular docking required
-- Robust performance regardless of binding site determination method
+
+- Complex-free design: no molecular docking required
+- Internal binding site detection: no explicit binding site input required
 - Robust performance on imperfect structural inputs
 
 ## Installation
 
 ### 1. Clone repository
+
 ```bash
 git clone https://github.com/KU-MedAI/InSiteDTA.git
 cd InSiteDTA
 ```
 
 ### 2. Create conda environment
+
 ```bash
 conda env create -f environment.yml
 conda activate insite
 ```
 
 **Our tested environment:**
+
 - Python: 3.9.19
 - PyTorch: 2.5.1
 - PyTorch Geometric: 2.6.1
@@ -44,6 +49,7 @@ python 01-inference.py \
 ### Step 1: Prepare Data Structure
 
 Organize your data in nested structure (PDBbind format):
+
 ```
 raw_data/
 ├── {pdb_id}/
@@ -53,6 +59,7 @@ raw_data/
 ```
 
 Prepare SMILES CSV file (`smiles.csv`):
+
 ```csv
 PDB_ID,Canonical SMILES
 1abc,CCO
@@ -60,9 +67,11 @@ PDB_ID,Canonical SMILES
 ```
 
 For affinity prediction, prepare affinity index JSON (`affinity.json`):
+
 ```json
 {"1abc": 5.2, "1def": 7.8}
 ```
+
 > **Note:** Affinity labels are loaded from `--index_file` (default: `src/data/index/affinity_index_pdbbind2020.json`). Samples without a matching entry are trained without affinity supervision.
 
 ### Step 2: Preprocess
@@ -93,6 +102,7 @@ python 03-train.py \
 ```
 
 Training uses **self-distillation** (an EMA teacher) and saves two checkpoints to `--save_dir`:
+
 - `{split}_s{seed}_{timestamp}.pt` — student
 - `{split}_s{seed}_{timestamp}_teacher.pt` — EMA teacher (**use this for inference / evaluate / reproduce**)
 
@@ -109,6 +119,7 @@ python 04-evaluate.py \
 ```
 
 The script will:
+
 1. Load the test split defined in the training result file
 2. Run inference on the test set
 3. Report performance metrics (PCC, RMSE, MAE, DCC, DCC_SR, DVO)
@@ -117,6 +128,7 @@ The script will:
 ## Reproduce Paper Results
 
 Run evaluation across the benchmark scenarios (`--scenario`: `crystal`, `redocked`, `p2rank`, `alphafold`):
+
 ```bash
 # Evaluate on Coreset_crystal
 python 05-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario crystal --device 0
@@ -132,6 +144,7 @@ python 05-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario alphafold --de
 ```
 
 The script will:
+
 1. Prepare ligand features from SMILES
 2. Voxelize protein structures
 3. Evaluate each provided checkpoint (`--ckpt` accepts multiple, e.g. multiple seeds)
@@ -140,38 +153,45 @@ The script will:
 ## Output
 
 **Inference (01-inference.py):**
+
 - Predicted binding affinity in pK scale (higher values = stronger binding)
 
 **Training (03-train.py):**
+
 - Student checkpoint: `{save_dir}/{split}_s{seed}_{timestamp}.pt`
 - EMA teacher checkpoint: `{save_dir}/{split}_s{seed}_{timestamp}_teacher.pt` (used for inference / evaluate / reproduce)
 - Training results: `{save_dir}/{split}_s{seed}_{timestamp}_results.json`
 
 **Evaluate (04-evaluate.py):**
+
 - Evaluation results CSV: `{save_dir}/{experiment_name}_test_results.csv`
 
 **Reproduce (05-reproduce.py):**
+
 - Aggregated metrics across the provided checkpoints (mean ± std): PCC, RMSE, MAE, DCC, DCC_SR, DVO
 
 ## Data
 
 **$Coreset_{crystal}$**
+
 - Standard benchmark dataset from PDBbind
 
 **$Coreset_{redocked}$**
+
 - Coreset with redocked ligand in the native pocket
 
 **$Coreset_{p2rank}$**
+
 - Ligand redocked into the pocket predicted by P2Rank
-  ([Krivák & Hoksza, 2018](https://doi.org/10.1186/s13321-018-0285-8))
+([Krivák & Hoksza, 2018](https://doi.org/10.1186/s13321-018-0285-8))
 
 **$Coreset_{alphafold}$**
-- Protein structures predicted by ColabFold
-  ([Mirdita et al., 2022](https://doi.org/10.1038/s41592-022-01488-1))
-  using AlphaFold-Multimer
-  ([Evans et al., 2022](https://doi.org/10.1101/2021.10.04.463034))
-  (imperfect-structure benchmark)
 
+- Protein structures predicted by ColabFold
+([Mirdita et al., 2022](https://doi.org/10.1038/s41592-022-01488-1))
+using AlphaFold-Multimer
+([Evans et al., 2022](https://doi.org/10.1101/2021.10.04.463034))
+(imperfect-structure benchmark)
 
 ## Citation
 
