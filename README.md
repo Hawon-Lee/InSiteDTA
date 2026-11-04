@@ -35,6 +35,8 @@ conda activate insite
 
 
 
+Run commands from the repository root with the `insite` environment active.
+
 ## Quick Start Example
 
 ```bash
@@ -45,7 +47,6 @@ python 01-inference.py \
 ```
 
 > Optional: `--save_bs_pdb <path>` exports the predicted binding-site residues as a PDB (`--save_voxel_pdb <path>` for the raw voxel grid; `--bs_threshold` tunes the probability cutoff).
-
 
 
 ## Training With Your Own Data
@@ -72,7 +73,7 @@ PDB_ID,Canonical SMILES
 1def,c1ccccc1
 ```
 
-For affinity prediction, prepare affinity index JSON (`affinity.json`):
+For training, prepare affinity index JSON (`affinity.json`) with pK labels:
 
 ```json
 {"1abc": 5.2, "1def": 7.8}
@@ -91,6 +92,7 @@ python 02-preprocess.py \
     --smiles_csv ./smiles.csv \
     --index_file ./affinity.json \
     --test_key_file none \
+    --center_method intelligent \
     --voxel_size 2 \
     --n_voxels 32 \
     --device 0
@@ -109,13 +111,16 @@ Set `--test_key_file` to a text file containing one test PDB ID per line, or use
 ### Step 3: Train
 
 ```bash
-python 03-train.py \
-    --data_config ./preprocessed/data_config_*.json \
+WANDB_MODE=disabled python 03-train.py \
+    --data_config ./preprocessed/data_config_YYMMDD-HHMMSS.json \
     --save_dir ./checkpoints \
     --device 0 \
     --epochs 300 \
     --batch_size 48
 ```
+
+Replace the JSON filename with the exact file printed by preprocessing.
+`WANDB_MODE=disabled` disables Weights & Biases logging; omit it to use configured W&B logging.
 
 Training uses **self-distillation** (an EMA teacher) and saves two checkpoints to `--save_dir`:
 
@@ -123,23 +128,29 @@ Training uses **self-distillation** (an EMA teacher) and saves two checkpoints t
 - `{split}_s{seed}_{timestamp}_teacher.pt` — EMA teacher (**use this for inference / reproduce**)
 
 A `{split}_s{seed}_{timestamp}_results.json` with student/teacher metrics is also written.
+The saved teacher is then evaluated on the test split with six-view affinity
+averaging; test metrics are added to the same JSON. The best epoch is selected
+by student validation PCC, falling back to validation loss when PCC is undefined.
 
-## Reproduce Paper Results 3.1
+## Evaluate CoreSet Checkpoints
 
 Run evaluation across the benchmark scenarios (`--scenario`: `crystal`, `redocked`, `p2rank`, `alphafold`):
 
+Crystal/redocked evaluation uses the bundled equivalent-pocket labels at
+`src/data/index/pdbbind2016_equivalent_pockets.npz` (override with `--equivalent_pockets <path>`).
+
 ```bash
 # Evaluate on Coreset_crystal with 6-face TTA
-python 04-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario crystal --use_tta --device 0
+python 04-reproduce.py --ckpt src/ckpt/CleanSplit_fold0_s*_teacher.pt --scenario crystal --use_tta --device 0
 
 # Evaluate on Coreset_redocked with 6-face TTA
-python 04-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario redocked --use_tta --device 0
+python 04-reproduce.py --ckpt src/ckpt/CleanSplit_fold0_s*_teacher.pt --scenario redocked --use_tta --device 0
 
 # Evaluate on Coreset_p2rank with 6-face TTA
-python 04-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario p2rank --use_tta --device 0
+python 04-reproduce.py --ckpt src/ckpt/CleanSplit_fold0_s*_teacher.pt --scenario p2rank --use_tta --device 0
 
 # Evaluate on Coreset_alphafold with 6-face TTA
-python 04-reproduce.py --ckpt src/ckpt/CleanSplit_*.pt --scenario alphafold --use_tta --device 0
+python 04-reproduce.py --ckpt src/ckpt/CleanSplit_fold0_s*_teacher.pt --scenario alphafold --use_tta --device 0
 ```
 
 The script will:
@@ -148,6 +159,15 @@ The script will:
 2. Voxelize protein structures
 3. Evaluate affinity predictions with 6-face TTA (`--ckpt` accepts multiple, e.g. multiple seeds)
 4. Report aggregated metrics — mean ± std (PCC, RMSE, MAE, DCC, DCC_SR, DVO)
+
+Inputs are cached under `model_input/ligands` and `model_input/proteins_<scenario>`.
+Regenerate the relevant cache when changing preprocessing settings. Pocket scoring
+uses rank-1 connected components and, for crystal/redocked, equivalent ground-truth
+pockets; it differs from the legacy voxel metrics reported after training.
+The AlphaFold CLI evaluates all 285 paired inputs. The paper comparison excludes
+`4agn`, `4agq`, and `5aba` because P2Rank failed to detect pockets on their predicted
+structures, leaving 282 complexes. InSiteDTA does not require these pockets; the
+exclusion ensures a common evaluation set with pocket-dependent baselines.
 
 
 

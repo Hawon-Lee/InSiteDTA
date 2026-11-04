@@ -54,11 +54,13 @@ def get_arguments():
     parser.add_argument(
         "--data_config",
         type=str,
+        required=True,
         help="Json configuration file path specifies train/test data splits and metadata for learning.",
     )
     parser.add_argument(
         "--save_dir",
         type=str,
+        required=True,
         help="Output directory to save best model validation results and checkpoint",
     )
     parser.add_argument(
@@ -150,7 +152,8 @@ def get_arguments():
 
     parser.add_argument(
         "--mol_encoder_types",
-        type=str,
+        nargs="+",
+        choices=["attnfp", "schnet", "egnn", "gcn", "gat"],
         default=["attnfp", "schnet", "egnn"],
         help="Molecular graph encoder combinations (choices: attnfp, schnet, egnn, gcn, gat)",
     )
@@ -345,6 +348,17 @@ def get_configs() -> tuple[dict, dict]:
     return data_cfg, vars(train_cfg)
 
 
+def affinity_pcc(predictions, targets):
+    """PCC is undefined for fewer than two labels or constant values."""
+    pred = torch.cat(predictions).float().numpy().reshape(-1)
+    true = torch.cat(targets).numpy().reshape(-1)
+    valid = np.isfinite(pred) & np.isfinite(true)
+    pred, true = pred[valid], true[valid]
+    if len(true) < 2 or np.std(pred) == 0 or np.std(true) == 0:
+        return float("nan")
+    return float(np.corrcoef(pred, true)[0, 1])
+
+
 def create_ema_teacher(model):
     """Create EMA teacher as a deep copy with frozen gradients."""
     teacher = copy.deepcopy(model)
@@ -374,6 +388,10 @@ def train_model(
     exp_name: str,
 ):
     print("Start training!\n")
+    if not len(tr_loader) or not len(vl_loader.dataset):
+        raise ValueError("Training and validation splits must both contain usable samples")
+    if train_cfg["epochs"] < 1 or train_cfg["grad_accumulation_steps"] < 1:
+        raise ValueError("epochs and grad_accumulation_steps must be positive")
     os.makedirs(train_cfg["save_dir"], exist_ok=True)
 
     wandb.init(
@@ -434,7 +452,7 @@ def train_model(
     poc_weight = train_cfg["poc_loss_weight"]
     aff_weight = train_cfg["aff_loss_weight"]
 
-    best_vl_PCC = -float("inf")
+    best_vl_PCC = float("nan")
     best_vl_loss = float("inf")
     best_model = None
     best_teacher = None
@@ -513,6 +531,7 @@ def train_model(
 
             with autocast(device_type=device.type):
                 pred_poc, pred_aff = model(voxel, lig_data)
+                pred_aff = pred_aff.reshape(-1)
 
                 # GT losses
                 has_aff_labels = ~torch.isnan(true_aff).all()
@@ -603,6 +622,8 @@ def train_model(
                 with autocast(device_type=device.type):
                     pred_poc, pred_aff = model(voxel, lig_data)
                     teacher_poc, teacher_aff = teacher(voxel, lig_data)
+                    pred_aff = pred_aff.reshape(-1)
+                    teacher_aff = teacher_aff.reshape(-1)
 
                     poc_bce_loss = poc_criterion_bce(pred_poc, pocket) * batch_size
                     poc_softdice_loss = poc_criterion_softdice(pred_poc, pocket) * batch_size
@@ -668,13 +689,7 @@ def train_model(
         vl_DCC_nan_count = len(vl_nan_indices)
         nan_count_ls.append(vl_DCC_nan_count)
 
-        epoch_pred_aff_values = (
-            torch.cat(vl_pred_aff_values, dim=0).cpu().numpy().squeeze()
-        )
-        epoch_true_aff_values = (
-            torch.cat(vl_true_aff_values, dim=0).cpu().numpy().squeeze()
-        )
-        vl_PCC = np.corrcoef(epoch_pred_aff_values, epoch_true_aff_values)[0, 1]
+        vl_PCC = affinity_pcc(vl_pred_aff_values, vl_true_aff_values)
 
         # Teacher validation metrics
         avg_teacher_vl_aff_loss = teacher_vl_aff_loss_sum / vl_dataset_size
@@ -682,10 +697,7 @@ def train_model(
             len([d for d in teacher_vl_DCCs if d <= train_cfg["DCC_SR_threshold"]])
             / vl_dataset_size
         )
-        teacher_pred_aff_np = (
-            torch.cat(teacher_vl_pred_aff_values, dim=0).cpu().numpy().squeeze()
-        )
-        teacher_vl_PCC = np.corrcoef(teacher_pred_aff_np, epoch_true_aff_values)[0, 1]
+        teacher_vl_PCC = affinity_pcc(teacher_vl_pred_aff_values, vl_true_aff_values)
 
         # Print epoch results
         print(
@@ -729,12 +741,19 @@ def train_model(
         scheduler.step()
 
         # Save best model (PCC 기준)
-        if not np.isnan(vl_PCC) and vl_PCC > best_vl_PCC:
+        if (np.isfinite(vl_PCC) and (
+            not np.isfinite(best_vl_PCC) or vl_PCC > best_vl_PCC
+        )) or (
+            not np.isfinite(vl_PCC)
+            and not np.isfinite(best_vl_PCC)
+            and np.isfinite(avg_vl_total_loss)
+            and avg_vl_total_loss < best_vl_loss
+        ):
             best_vl_PCC = vl_PCC
             best_vl_loss = avg_vl_total_loss
 
-            best_model = model.state_dict().copy()
-            best_teacher = teacher.state_dict().copy()
+            best_model = copy.deepcopy(model.state_dict())
+            best_teacher = copy.deepcopy(teacher.state_dict())
             best_epoch = epoch + 1
             best_vl_poc_loss = avg_vl_poc_loss
             best_vl_aff_loss = avg_vl_aff_loss
@@ -763,6 +782,10 @@ def train_model(
             print(f"Early stopping triggered at epoch {epoch + 1}")
             print(f"Best model was at epoch {early_stopping.best_epoch}")
             break
+
+    if best_model is None:
+        wandb.finish()
+        raise RuntimeError("No finite validation loss/PCC; no checkpoint could be selected")
 
     # Close wandb writer
     if wandb.run is not None:

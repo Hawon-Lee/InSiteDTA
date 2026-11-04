@@ -70,7 +70,7 @@ def get_arguments():
     parser.add_argument(
         "--label_radius",
         type=float,
-        default=2.0,
+        default=0.0,
         help="Radius for pocket labeling in voxelization (0 for exact voxel matching)",
     )
     parser.add_argument(
@@ -112,7 +112,7 @@ def get_arguments():
         "--seed",
         type=int,
         default=312,
-        help="Seed for reproduce data split. 0 for random",
+        help="Random seed for reproducible data splits (including seed 0)",
     )
     parser.add_argument(
         "--index_file",
@@ -168,8 +168,7 @@ def featurize_ligand(smiles_csv: str, pdb_id_ls: list[str], save_dir: str) -> No
     for pdb_id in tqdm(pdb_id_ls, desc="1. Preparing ligands"):
         match_row = smiles_df[smiles_df["PDB_ID"] == pdb_id]
         if match_row.empty:
-            print(f"[Warning] Skipping PDB ID '{pdb_id}' - not found in SMILES CSV")
-            continue
+            raise ValueError(f"PDB ID '{pdb_id}' is missing from SMILES CSV: {smiles_csv}")
         smi = match_row["Canonical SMILES"].iloc[0]
         out_name = f"{save_dir}/{pdb_id}_ligand.pkl"
         if os.path.exists(out_name):
@@ -179,6 +178,8 @@ def featurize_ligand(smiles_csv: str, pdb_id_ls: list[str], save_dir: str) -> No
         if m is None:
             raise RuntimeError(f"Mol object was not created with smiles '{smi}'")
         m = generate_conformers(m, target_numConfs=5)
+        if not m or m.GetNumConformers() < 5:
+            raise RuntimeError(f"Failed to generate five ligand conformers for '{pdb_id}'")
 
         with open(out_name, "wb") as fp:
             pickle.dump(m, fp)
@@ -192,7 +193,7 @@ def voxelize_protein(
     voxel_size: int = 2,
     n_voxels: int = 32,
     device=0,
-    label_radius: float = 2.0,
+    label_radius: float = 0.0,
     center_method: str = "intelligent",
     esm_dir: str = None,
     pca_path: str = None,
@@ -231,6 +232,10 @@ def voxelize_protein(
 
         if os.path.exists(out_voxel_name) and os.path.exists(out_center_name):
             continue
+
+        for path in (ptn_path, poc_path):
+            if not os.path.isfile(path):
+                raise FileNotFoundError(f"Required structure not found: {path}")
 
         # Load ESM embedding if available
         esm_data = None
@@ -363,6 +368,7 @@ def main():
         save_dir=save_dir_ptn,
         voxel_size=args.voxel_size,
         n_voxels=args.n_voxels,
+        device=args.device,
         label_radius=args.label_radius,
         center_method=args.center_method,
         esm_dir=args.esm_dir,

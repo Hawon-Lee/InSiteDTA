@@ -67,6 +67,8 @@ def prep_ligand(smi_csv, input_dir="./model_input"):
         m = generate_mol_object(smi)
         if m is None: raise RuntimeError(f"Mol object was not created with smiles '{smi}'")
         m = generate_conformers(m, target_numConfs=5)
+        if not m or m.GetNumConformers() < 5:
+            raise RuntimeError(f"Failed to generate five ligand conformers for '{pdb_id}'")
         
         with open(out_path, 'wb') as fp:
             pickle.dump(m, fp)

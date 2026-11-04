@@ -7,6 +7,7 @@ import torch
 from torch_geometric.data import Batch
 
 from src.scripts.model.model import InSiteDTA
+from src.scripts.evaluation import FACE_ROTATIONS
 from src.scripts.preprocess.generate_mol_object import generate_conformers, generate_mol_object
 from src.scripts.preprocess.ligand_featurization import encode_ligand_to_Data
 from src.scripts.preprocess.protein_voxelization import ProteinVoxelizer
@@ -35,10 +36,14 @@ def prep_single_smiles(smiles):
     if m is None:
         raise RuntimeError(f"Mol object was not created with smiles '{smiles}'")
     m = generate_conformers(m, target_numConfs=5)
+    if not m or m.GetNumConformers() < 5:
+        raise RuntimeError("Failed to generate five ligand conformers")
     return m
 
 
 def prep_single_protein(pdb_path: str, use_p2rank: bool = False, device="cuda:0"):
+    if not Path(pdb_path).is_file():
+        raise FileNotFoundError(f"Protein PDB not found: {pdb_path}")
     pv = ProteinVoxelizer(voxel_size=2, n_voxels=32)
     if use_p2rank:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -54,6 +59,7 @@ def prep_single_protein(pdb_path: str, use_p2rank: bool = False, device="cuda:0"
 
 
 def inference_single(voxel, mol, ckpt, device):
+    """Average affinity over six views and retain the original-view pocket."""
     voxel = voxel.astype(np.float32)
     voxel = torch.from_numpy(voxel).unsqueeze(0).permute(0, 4, 1, 2, 3).to(device)
 
@@ -61,13 +67,18 @@ def inference_single(voxel, mol, ckpt, device):
     lig_data = Batch.from_data_list([lig_data]).to(device)
 
     model = InSiteDTA(out_channels=1)
-    model.load_state_dict(torch.load(ckpt, weights_only=False))
+    model.load_state_dict(torch.load(ckpt, map_location=device, weights_only=True))
     model.to(device)
     model.eval()
 
     with torch.no_grad():
-        pred_logits, pred_aff = model(voxel, lig_data)
-    pred_pocket_prob = torch.sigmoid(pred_logits[:, -1:, ...])
+        affinity_views = []
+        for index, rotation in enumerate(FACE_ROTATIONS):
+            pred_logits, pred_aff = model(rotation(voxel), lig_data)
+            affinity_views.append(pred_aff.reshape(-1))
+            if index == 0:
+                pred_pocket_prob = torch.sigmoid(pred_logits[:, -1:, ...])
+        pred_aff = torch.stack(affinity_views).mean(dim=0)
     return pred_aff, pred_pocket_prob
 
 
@@ -126,7 +137,7 @@ def save_bs_voxel_pdb(voxelizer: ProteinVoxelizer, pred_prob: torch.Tensor,
 def main():
     args = get_arguments()
     print_args(args)
-    device = f"cuda:{args.device}"
+    device = f"cuda:{args.device}" if torch.cuda.is_available() else "cpu"
 
     voxel, center, voxelizer = prep_single_protein(args.pdb_path, use_p2rank=args.use_p2rank, device=device)
     mol = prep_single_smiles(smiles=args.smiles)
